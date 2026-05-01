@@ -3,3 +3,5 @@ venv/
 .env
 .env.local
 media/
+__pycache__/
+*.pyc

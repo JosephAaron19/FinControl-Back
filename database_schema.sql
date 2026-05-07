@@ -59,7 +59,20 @@ CREATE TABLE "FinC"."incidencias" (
     "estado_revision" VARCHAR(50) DEFAULT 'Pendiente' -- 'Pendiente', 'Aprobada', 'Rechazada'
 );
 
--- 6. DATOS DE PRUEBA (OPCIONAL)
+-- 6. TABLA DE EVENTOS DE ASISTENCIA (HISTORIAL DETALLADO POR BOTÓN)
+CREATE TABLE "FinC"."asistencia_eventos" (
+    "id" SERIAL PRIMARY KEY,
+    "asistencia_id" INTEGER NOT NULL REFERENCES "FinC"."asistencias"("id") ON DELETE CASCADE,
+    "tipo_evento" VARCHAR(50) NOT NULL, -- 'ENTRADA', 'INICIO_BREAK', 'FIN_BREAK', 'SALIDA'
+    "latitud" DECIMAL(10, 8) NOT NULL,
+    "longitud" DECIMAL(11, 8) NOT NULL,
+    "dispositivo_info" TEXT,
+    "es_fuera_de_zona" BOOLEAN DEFAULT FALSE,
+    "distancia_sede_metros" DECIMAL(10, 2),
+    "fecha_hora" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 7. DATOS DE PRUEBA (OPCIONAL)
 INSERT INTO "FinC"."sedes" (nombre, direccion, latitud, longitud, radio_metros)
 VALUES ('Sede Central - Finhold', 'Calle Las Orquídeas 456, San Isidro', -12.046374, -77.042793, 100);
 

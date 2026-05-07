@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    container_name: fincontrol_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    # Lee las variables de entorno desde el archivo .env
+    env_file:
+      - .env
+    # Mapear la carpeta de media para que las imágenes subidas persistan
+    volumes:
+      - ./media:/app/media
+    # El comando se sobreescribe opcionalmente si necesitas correr migraciones antes
+    # command: sh -c "python manage.py migrate && gunicorn --bind 0.0.0.0:8000 fincontrol_backend.wsgi:application"

@@ -6,11 +6,12 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia
 from .serializers import (
     SedeSerializer, UsuarioSerializer, AsistenciaSerializer, 
     IncidenciaSerializer, CustomTokenObtainPairSerializer,
-    ConfiguracionTrackingSerializer, UbicacionPuntoSerializer
+    ConfiguracionTrackingSerializer, UbicacionPuntoSerializer,
+    RolSerializer, TipoIncidenciaSerializer
 )
 import math
 
@@ -250,6 +251,42 @@ class UserProfileView(generics.RetrieveAPIView):
 
     def get_object(self):
         return self.request.user
+
+# Web Dashboard Views
+class RolListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Rol.objects.all()
+    serializer_class = RolSerializer
+
+class TipoIncidenciaListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = TipoIncidencia.objects.all()
+    serializer_class = TipoIncidenciaSerializer
+
+class SedeListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Sede.objects.all()
+    serializer_class = SedeSerializer
+
+class SedeDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Sede.objects.all()
+    serializer_class = SedeSerializer
+
+class UsuarioListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Usuario.objects.all()
+    serializer_class = UsuarioSerializer
+
+class IncidenciaListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Incidencia.objects.all().order_by('-fecha_hora_reporte')
+    serializer_class = IncidenciaSerializer
+
+class AsistenciaListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    queryset = Asistencia.objects.all().order_by('-fecha')
+    serializer_class = AsistenciaSerializer
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer

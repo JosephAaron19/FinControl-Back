@@ -1,17 +1,55 @@
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 
+class Rol(models.Model):
+    codigo = models.CharField(max_length=50, unique=True)
+    nombre = models.CharField(max_length=100)
+    descripcion = models.TextField(null=True, blank=True)
+    activo = models.BooleanField(default=True, null=True, blank=True)
+    creado_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    actualizado_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        db_table = 'roles'
+        verbose_name = 'Rol'
+        verbose_name_plural = 'Roles'
+
+    def __str__(self):
+        return self.nombre
+
+class TipoIncidencia(models.Model):
+    codigo = models.CharField(max_length=50, unique=True)
+    nombre = models.CharField(max_length=150)
+    descripcion = models.TextField(null=True, blank=True)
+    requiere_evidencia = models.BooleanField(default=False, null=True, blank=True)
+    activo = models.BooleanField(default=True, null=True, blank=True)
+    orden = models.IntegerField(default=0, null=True, blank=True)
+    creado_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    actualizado_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        db_table = 'tipos_incidencia'
+        verbose_name = 'Tipo de Incidencia'
+        verbose_name_plural = 'Tipos de Incidencia'
+
+    def __str__(self):
+        return self.nombre
 class Sede(models.Model):
     id = models.AutoField(primary_key=True)
     nombre = models.CharField(max_length=100)
     direccion = models.TextField(null=True, blank=True)
-    latitud = models.DecimalField(max_digits=10, decimal_places=8)
-    longitud = models.DecimalField(max_digits=11, decimal_places=8)
-    radio_metros = models.IntegerField(default=100)
-    creado_at = models.DateTimeField(auto_now_add=True)
-
+    latitud = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)
+    longitud = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
+    radio_metros = models.IntegerField(null=True, blank=True)
+    activo = models.BooleanField(default=True, null=True, blank=True)
+    creado_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    actualizado_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+    codigo = models.CharField(max_length=50, unique=True, null=True, blank=True)
+    referencia = models.TextField(null=True, blank=True)
+    creado_por = models.ForeignKey('Usuario', models.DO_NOTHING, db_column='creado_por', related_name='sedes_creadas', null=True, blank=True)
+    actualizado_por = models.ForeignKey('Usuario', models.DO_NOTHING, db_column='actualizado_por', related_name='sedes_actualizadas', null=True, blank=True)
     class Meta:
-        db_table = 'finc"."sedes'
+        db_table = 'sedes'
         verbose_name = 'Sede'
         verbose_name_plural = 'Sedes'
 
@@ -39,6 +77,8 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     telefono = models.CharField(max_length=50, null=True, blank=True)
     email = models.CharField(max_length=255, null=True, blank=True)
     sede = models.ForeignKey(Sede, on_delete=models.SET_NULL, null=True, related_name='usuarios')
+    rol = models.ForeignKey(Rol, on_delete=models.SET_NULL, null=True, related_name='usuarios')
+    activo = models.BooleanField(default=True, null=True, blank=True)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     creado_at = models.DateTimeField(auto_now_add=True)
@@ -50,7 +90,7 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     REQUIRED_FIELDS = ['nombre_completo']
 
     class Meta:
-        db_table = 'finc"."usuarios'
+        db_table = 'usuarios'
         verbose_name = 'Usuario'
         verbose_name_plural = 'Usuarios'
 
@@ -75,7 +115,7 @@ class Asistencia(models.Model):
     actualizado_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'finc"."asistencias'
+        db_table = 'asistencias'
         unique_together = ('usuario', 'fecha')
         verbose_name = 'Asistencia'
         verbose_name_plural = 'Asistencias'
@@ -84,16 +124,28 @@ class Incidencia(models.Model):
     usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='incidencias')
     asistencia = models.ForeignKey(Asistencia, on_delete=models.CASCADE, related_name='incidencias_detalle', null=True, blank=True)
     tipo_incidencia = models.CharField(max_length=100)
+    tipo_incidencia_0 = models.ForeignKey(TipoIncidencia, on_delete=models.SET_NULL, null=True, blank=True, db_column='tipo_incidencia_id')
     descripcion = models.TextField()
     foto_evidencia_url = models.ImageField(upload_to='incidencias/', db_column='foto_evidencia_url', null=True, blank=True)
+    evidencia_url = models.TextField(null=True, blank=True)
+    evidencia_nombre_archivo = models.CharField(max_length=255, null=True, blank=True)
+    evidencia_mime_type = models.CharField(max_length=100, null=True, blank=True)
     fecha_hora_reporte = models.DateTimeField(auto_now_add=True)
     estado_revision = models.CharField(max_length=50, default='Pendiente')
+    comentario_revision = models.TextField(null=True, blank=True)
+    revisado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, related_name='incidencias_revisadas', null=True, blank=True)
+    revisado_at = models.DateTimeField(null=True, blank=True)
     latitud = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)
     longitud = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
     dispositivo_info = models.TextField(null=True, blank=True)
+    ip_origen = models.CharField(max_length=100, null=True, blank=True)
+    user_agent = models.TextField(null=True, blank=True)
+    origen = models.CharField(max_length=50, null=True, blank=True)
+    activo = models.BooleanField(default=True, null=True, blank=True)
+    actualizado_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
     class Meta:
-        db_table = 'finc"."incidencias'
+        db_table = 'incidencias'
         verbose_name = 'Incidencia'
         verbose_name_plural = 'Incidencias'
 
@@ -107,10 +159,12 @@ class AsistenciaEvento(models.Model):
     sede_id = models.IntegerField(null=True, blank=True)
     es_fuera_de_zona = models.BooleanField(default=False)
     distancia_sede_metros = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    ip_origen = models.CharField(max_length=100, null=True, blank=True)
+    user_agent = models.TextField(null=True, blank=True)
     fecha_hora = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'finc"."asistencia_eventos'
+        db_table = 'asistencia_eventos'
         verbose_name = 'Evento de Asistencia'
         verbose_name_plural = 'Eventos de Asistencia'
 
@@ -124,7 +178,7 @@ class ConfiguracionTracking(models.Model):
     actualizado_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'finc"."configuracion_tracking'
+        db_table = 'configuracion_tracking'
         verbose_name = 'Configuración de Tracking'
         verbose_name_plural = 'Configuraciones de Tracking'
 
@@ -135,16 +189,24 @@ class UbicacionPunto(models.Model):
     latitud = models.DecimalField(max_digits=10, decimal_places=8)
     longitud = models.DecimalField(max_digits=11, decimal_places=8)
     precision_metros = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    velocidad_mps = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    altitud_metros = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    direccion_grados = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     bateria_porcentaje = models.IntegerField(null=True, blank=True)
     es_fuera_de_zona = models.BooleanField(default=False)
     distancia_sede_metros = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     origen = models.CharField(max_length=50, default='App Móvil')
+    estado_envio = models.CharField(max_length=50, null=True, blank=True)
     dispositivo_info = models.TextField(null=True, blank=True)
+    ip_origen = models.CharField(max_length=100, null=True, blank=True)
+    user_agent = models.TextField(null=True, blank=True)
+    fecha = models.DateField(auto_now_add=True, null=True, blank=True)
+    hora = models.TimeField(auto_now_add=True, null=True, blank=True)
     fecha_hora = models.DateTimeField(auto_now_add=True)
     creado_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'finc"."ubicacion_puntos'
+        db_table = 'ubicacion_puntos'
         verbose_name = 'Punto de Ubicación'
         verbose_name_plural = 'Puntos de Ubicación'
 
@@ -173,6 +235,8 @@ class HistorialJornada(models.Model):
     distancia_inicio_break_metros = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     distancia_fin_break_metros = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     distancia_salida_metros = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    total_tiempo_break = models.DurationField(null=True, blank=True)
+    total_horas_trabajadas = models.DurationField(null=True, blank=True)
     cantidad_marcaciones = models.IntegerField(default=0)
     dispositivo_entrada = models.TextField(null=True, blank=True)
     dispositivo_inicio_break = models.TextField(null=True, blank=True)
@@ -186,6 +250,6 @@ class HistorialJornada(models.Model):
     actualizado_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = 'finc"."historial_jornadas'
+        db_table = 'historial_jornadas'
         verbose_name = 'Historial de Jornada'
         verbose_name_plural = 'Historial de Jornadas'

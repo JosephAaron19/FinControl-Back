@@ -3,7 +3,9 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views import (
     AttendanceEventView, AttendanceHistoryView, IncidentCreateView, 
     UserProfileView, CustomTokenObtainPairView, TrackingConfigView,
-    LocationPointCreateView, JourneyTrackingHistoryView, SyncStatusView
+    LocationPointCreateView, JourneyTrackingHistoryView, SyncStatusView,
+    RolListView, TipoIncidenciaListView, SedeListCreateView, SedeDetailView, UsuarioListView,
+    IncidenciaListView, AsistenciaListView
 )
 
 urlpatterns = [
@@ -24,4 +26,13 @@ urlpatterns = [
     path('configuracion-tracking/', TrackingConfigView.as_view(), name='tracking_config'),
     path('ubicacion-puntos/', LocationPointCreateView.as_view(), name='location_points'),
     path('attendance/<int:asistencia_id>/points/', JourneyTrackingHistoryView.as_view(), name='journey_points'),
+
+    # Web Dashboard Endpoints
+    path('roles/', RolListView.as_view(), name='rol_list'),
+    path('tipos-incidencia/', TipoIncidenciaListView.as_view(), name='tipo_incidencia_list'),
+    path('sedes/', SedeListCreateView.as_view(), name='sede_list_create'),
+    path('sedes/<int:pk>/', SedeDetailView.as_view(), name='sede_detail'),
+    path('usuarios/', UsuarioListView.as_view(), name='usuario_list'),
+    path('incidencias/', IncidenciaListView.as_view(), name='incidencia_list'),
+    path('asistencias/', AsistenciaListView.as_view(), name='asistencia_list'),
 ]

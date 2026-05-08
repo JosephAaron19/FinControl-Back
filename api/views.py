@@ -297,6 +297,9 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             return UsuarioCreateUpdateSerializer
         return UsuarioSerializer
 
+    def perform_create(self, serializer):
+        serializer.save(creado_por=self.request.user)
+
     @action(detail=True, methods=['post'], url_path='change-password')
     def change_password(self, request, pk=None):
         usuario = self.get_object()

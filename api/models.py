@@ -79,6 +79,9 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     sede = models.ForeignKey(Sede, on_delete=models.SET_NULL, null=True, related_name='usuarios')
     rol = models.ForeignKey(Rol, on_delete=models.SET_NULL, null=True, related_name='usuarios')
     activo = models.BooleanField(default=True, null=True, blank=True)
+    debe_cambiar_password = models.BooleanField(default=False, null=True, blank=True)
+    observacion = models.TextField(null=True, blank=True)
+    creado_por = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='usuarios_creados', db_column='creado_por')
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     creado_at = models.DateTimeField(auto_now_add=True)
@@ -96,6 +99,18 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return f"{self.nombre_completo} ({self.dni})"
+
+class UsuarioSede(models.Model):
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='sedes_asignadas')
+    sede = models.ForeignKey(Sede, on_delete=models.CASCADE, related_name='usuarios_asignados')
+    puede_visualizar = models.BooleanField(default=True)
+    puede_gestionar = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'usuario_sedes'
+        unique_together = ('usuario', 'sede')
+        verbose_name = 'Usuario por Sede'
+        verbose_name_plural = 'Usuarios por Sede'
 
 class Asistencia(models.Model):
     usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='asistencias')
@@ -133,7 +148,7 @@ class Incidencia(models.Model):
     fecha_hora_reporte = models.DateTimeField(auto_now_add=True)
     estado_revision = models.CharField(max_length=50, default='Pendiente')
     comentario_revision = models.TextField(null=True, blank=True)
-    revisado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, related_name='incidencias_revisadas', null=True, blank=True)
+    revisado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, related_name='incidencias_revisadas', null=True, blank=True, db_column='revisado_por')
     revisado_at = models.DateTimeField(null=True, blank=True)
     latitud = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)
     longitud = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)

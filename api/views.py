@@ -6,9 +6,10 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia
+from django.db.models import Q
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede
 from .serializers import (
-    SedeSerializer, UsuarioSerializer, AsistenciaSerializer, 
+    SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
     IncidenciaSerializer, CustomTokenObtainPairSerializer,
     ConfiguracionTrackingSerializer, UbicacionPuntoSerializer,
     RolSerializer, TipoIncidenciaSerializer
@@ -137,6 +138,20 @@ class AttendanceEventView(generics.CreateAPIView):
             dispositivo_info=device_info,
             es_fuera_de_zona=not is_in_zone,
             distancia_sede_metros=distance
+        )
+
+        # Registrar el punto geográfico para que aparezca en la ruta/mapa de seguimiento
+        from .models import UbicacionPunto
+        UbicacionPunto.objects.create(
+            usuario=user,
+            asistencia=asistencia,
+            historial_jornada_id=historial.id,
+            latitud=lat,
+            longitud=lon,
+            es_fuera_de_zona=not is_in_zone,
+            distancia_sede_metros=distance,
+            origen='manual',
+            dispositivo_info=device_info
         )
 
         return Response({
@@ -273,10 +288,26 @@ class SedeDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Sede.objects.all()
     serializer_class = SedeSerializer
 
-class UsuarioListView(generics.ListAPIView):
+class UsuarioViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
-    queryset = Usuario.objects.all()
-    serializer_class = UsuarioSerializer
+    queryset = Usuario.objects.all().order_by('-creado_at')
+
+    def get_serializer_class(self):
+        if self.action in ['create', 'update', 'partial_update']:
+            return UsuarioCreateUpdateSerializer
+        return UsuarioSerializer
+
+    @action(detail=True, methods=['post'], url_path='change-password')
+    def change_password(self, request, pk=None):
+        usuario = self.get_object()
+        new_password = request.data.get('password')
+        if not new_password:
+            return Response({'error': 'La contraseña es requerida.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        usuario.set_password(new_password)
+        usuario.debe_cambiar_password = request.data.get('debe_cambiar_password', True)
+        usuario.save()
+        return Response({'status': 'Contraseña actualizada correctamente.'})
 
 class IncidenciaListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
@@ -332,3 +363,177 @@ class SyncStatusView(APIView):
             'has_changes': has_changes,
             'timestamp': max_ts.isoformat()
         })
+
+class ActividadHoyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        today = timezone.now().date()
+        
+        current_user = request.user
+        rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
+        
+        # Base query: solo operadores activos
+        usuarios = Usuario.objects.filter(activo=True, rol__nombre__icontains='operador').select_related('sede', 'rol')
+        
+        # Aplicar restricciones por rol
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            # Gerente ve creados por él O de sus sedes asignadas
+            sedes_asignadas = UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True)
+            usuarios = usuarios.filter(
+                Q(creado_por=current_user) | Q(sede_id__in=sedes_asignadas)
+            )
+        elif 'operador' in rol_nombre:
+            # Operador solo se ve a sí mismo
+            usuarios = usuarios.filter(id=current_user.id)
+        else:
+            # Administradores y Superadmins ven todos los operadores activos
+            pass
+        
+        data = []
+        
+        for user in usuarios:
+            # Asistencia de hoy
+            asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
+            
+            # Incidencias de hoy
+            incidencias_count = Incidencia.objects.filter(usuario=user, fecha_hora_reporte__date=today).count()
+            
+            # Puntos GPS de hoy
+            puntos_gps = UbicacionPunto.objects.filter(usuario=user, fecha=today)
+            puntos_count = puntos_gps.count()
+            ultimo_punto = puntos_gps.order_by('-fecha_hora').first()
+            
+            # Determinar estado
+            estado = 'Sin Marcar'
+            if asistencia:
+                if asistencia.hora_salida:
+                    estado = 'Salida'
+                elif asistencia.hora_fin_break:
+                    estado = 'Presente'
+                elif asistencia.hora_inicio_break:
+                    estado = 'En Break'
+                elif asistencia.hora_entrada:
+                    estado = 'Presente'
+                
+                if asistencia.estado == 'Observado':
+                    estado = 'Observado'
+                    
+            # Fuera de zona flag
+            fuera_de_zona = False
+            if ultimo_punto:
+                fuera_de_zona = ultimo_punto.es_fuera_de_zona
+            elif asistencia and asistencia.estado == 'Observado':
+                fuera_de_zona = True
+                
+            data.append({
+                'id': user.id,
+                'dni': user.dni,
+                'nombre_completo': user.nombre_completo,
+                'sede': user.sede.nombre if user.sede else '-',
+                'cargo': user.cargo,
+                'rol': user.rol.nombre if user.rol else '-',
+                'estado': estado,
+                'hora_entrada': asistencia.hora_entrada if asistencia else None,
+                'hora_inicio_break': asistencia.hora_inicio_break if asistencia else None,
+                'hora_fin_break': asistencia.hora_fin_break if asistencia else None,
+                'hora_salida': asistencia.hora_salida if asistencia else None,
+                'incidencias': incidencias_count,
+                'puntos_gps': puntos_count,
+                'fuera_de_zona': fuera_de_zona,
+                'ultima_ubicacion': {
+                    'latitud': ultimo_punto.latitud if ultimo_punto else None,
+                    'longitud': ultimo_punto.longitud if ultimo_punto else None,
+                    'distancia': ultimo_punto.distancia_sede_metros if ultimo_punto else None
+                } if ultimo_punto else None
+            })
+            
+        return Response(data)
+
+class ActividadDetalleUsuarioView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        today = timezone.now().date()
+        user = Usuario.objects.filter(id=pk).first()
+        
+        if not user:
+            return Response({'error': 'Usuario no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Validar permisos
+        current_user = request.user
+        rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
+        
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            # Validar si puede ver este usuario
+            sedes_asignadas = UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True)
+            if user.creado_por != current_user and user.sede_id not in sedes_asignadas:
+                return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
+        elif 'operador' in rol_nombre and current_user.id != user.id:
+            return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
+            
+        # Asistencia de hoy
+        asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
+        
+        # Incidencias de hoy
+        incidencias = Incidencia.objects.filter(usuario=user, fecha_hora_reporte__date=today).order_by('-fecha_hora_reporte')
+        
+        # Puntos GPS de hoy
+        puntos_gps = UbicacionPunto.objects.filter(usuario=user, fecha=today).order_by('fecha_hora')
+        
+        puntos_data = []
+        for p in puntos_gps:
+            puntos_data.append({
+                'id': p.id,
+                'latitud': p.latitud,
+                'longitud': p.longitud,
+                'precision_metros': p.precision_metros,
+                'bateria_porcentaje': p.bateria_porcentaje,
+                'es_fuera_de_zona': p.es_fuera_de_zona,
+                'distancia_sede_metros': p.distancia_sede_metros,
+                'origen': p.origen,
+                'estado_envio': p.estado_envio,
+                'fecha_hora': p.fecha_hora,
+                'dispositivo_info': p.dispositivo_info
+            })
+            
+        incidencias_data = []
+        for inc in incidencias:
+            incidencias_data.append({
+                'id': inc.id,
+                'tipo': inc.tipo_incidencia_0.nombre if inc.tipo_incidencia_0 else inc.tipo_incidencia,
+                'descripcion': inc.descripcion,
+                'fecha_hora_reporte': inc.fecha_hora_reporte,
+                'estado': inc.estado_revision
+            })
+            
+        ultimo_punto = puntos_gps.last()
+        
+        data = {
+            'usuario': {
+                'id': user.id,
+                'dni': user.dni,
+                'nombre_completo': user.nombre_completo,
+                'sede': user.sede.nombre if user.sede else '-',
+                'cargo': user.cargo
+            },
+            'asistencia': {
+                'hora_entrada': asistencia.hora_entrada if asistencia else None,
+                'hora_inicio_break': asistencia.hora_inicio_break if asistencia else None,
+                'hora_fin_break': asistencia.hora_fin_break if asistencia else None,
+                'hora_salida': asistencia.hora_salida if asistencia else None,
+                'estado': asistencia.estado if asistencia else 'Sin Marcar'
+            },
+            'resumen_gps': {
+                'total_puntos': puntos_gps.count(),
+                'puntos_fuera_zona': puntos_gps.filter(es_fuera_de_zona=True).count(),
+                'ultima_hora': ultimo_punto.fecha_hora if ultimo_punto else None,
+                'ultima_bateria': ultimo_punto.bateria_porcentaje if ultimo_punto else None,
+                'ultima_precision': ultimo_punto.precision_metros if ultimo_punto else None,
+                'es_fuera_de_zona': ultimo_punto.es_fuera_de_zona if ultimo_punto else False
+            },
+            'puntos_gps': puntos_data,
+            'incidencias': incidencias_data
+        }
+        
+        return Response(data)

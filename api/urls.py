@@ -1,12 +1,16 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views import (
     AttendanceEventView, AttendanceHistoryView, IncidentCreateView, 
     UserProfileView, CustomTokenObtainPairView, TrackingConfigView,
     LocationPointCreateView, JourneyTrackingHistoryView, SyncStatusView,
-    RolListView, TipoIncidenciaListView, SedeListCreateView, SedeDetailView, UsuarioListView,
-    IncidenciaListView, AsistenciaListView
+    RolListView, TipoIncidenciaListView, SedeListCreateView, SedeDetailView, UsuarioViewSet,
+    IncidenciaListView, AsistenciaListView, ActividadHoyView, ActividadDetalleUsuarioView
 )
+
+router = DefaultRouter()
+router.register(r'usuarios', UsuarioViewSet, basename='usuario')
 
 urlpatterns = [
     # Auth
@@ -32,7 +36,9 @@ urlpatterns = [
     path('tipos-incidencia/', TipoIncidenciaListView.as_view(), name='tipo_incidencia_list'),
     path('sedes/', SedeListCreateView.as_view(), name='sede_list_create'),
     path('sedes/<int:pk>/', SedeDetailView.as_view(), name='sede_detail'),
-    path('usuarios/', UsuarioListView.as_view(), name='usuario_list'),
     path('incidencias/', IncidenciaListView.as_view(), name='incidencia_list'),
     path('asistencias/', AsistenciaListView.as_view(), name='asistencia_list'),
+    path('actividad/hoy/', ActividadHoyView.as_view(), name='actividad_hoy'),
+    path('actividad/usuario/<int:pk>/', ActividadDetalleUsuarioView.as_view(), name='actividad_detalle_usuario'),
+    path('', include(router.urls)),
 ]

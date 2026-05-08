@@ -18,11 +18,34 @@ class TipoIncidenciaSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class UsuarioSerializer(serializers.ModelSerializer):
-    sede = SedeSerializer(read_only=True)
-    rol = RolSerializer(read_only=True)
+    sede_info = SedeSerializer(source='sede', read_only=True)
+    rol_info = RolSerializer(source='rol', read_only=True)
     class Meta:
         model = Usuario
-        fields = ('id', 'dni', 'nombre_completo', 'cargo', 'sede', 'rol', 'is_active', 'activo')
+        fields = ('id', 'dni', 'nombre_completo', 'cargo', 'telefono', 'email', 'sede', 'rol', 'sede_info', 'rol_info', 'is_active', 'activo', 'debe_cambiar_password', 'observacion')
+
+class UsuarioCreateUpdateSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=False)
+
+    class Meta:
+        model = Usuario
+        fields = ('dni', 'nombre_completo', 'password', 'cargo', 'telefono', 'email', 'sede', 'rol', 'activo', 'is_active', 'debe_cambiar_password', 'observacion')
+
+    def create(self, validated_data):
+        password = validated_data.pop('password', None)
+        user = super().create(validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop('password', None)
+        user = super().update(instance, validated_data)
+        if password:
+            user.set_password(password)
+            user.save()
+        return user
 
 class AsistenciaSerializer(serializers.ModelSerializer):
     sede_nombre = serializers.ReadOnlyField(source='usuario.sede.nombre')

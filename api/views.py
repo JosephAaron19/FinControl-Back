@@ -317,12 +317,7 @@ class SedeListCreateView(generics.ListCreateAPIView):
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            return queryset.filter(
-                Q(creado_por__rol__nombre__icontains='admin') | 
-                Q(creado_por__rol__nombre__icontains='gerente') |
-                Q(creado_por=user) |
-                Q(creado_por__isnull=True)
-            )
+            return queryset
         elif 'operador' in rol_nombre:
             if user.sede_id:
                 return queryset.filter(id=user.sede_id)
@@ -344,12 +339,7 @@ class SedeDetailView(generics.RetrieveUpdateDestroyAPIView):
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            return queryset.filter(
-                Q(creado_por__rol__nombre__icontains='admin') | 
-                Q(creado_por__rol__nombre__icontains='gerente') |
-                Q(creado_por=user) |
-                Q(creado_por__isnull=True)
-            )
+            return queryset
         elif 'operador' in rol_nombre:
             if user.sede_id:
                 return queryset.filter(id=user.sede_id)

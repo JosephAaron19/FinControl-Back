@@ -56,6 +56,24 @@ class Sede(models.Model):
     def __str__(self):
         return self.nombre
 
+class JornadaConfiguracion(models.Model):
+    sede = models.ForeignKey('Sede', models.DO_NOTHING)
+    dia_semana = models.CharField(max_length=20)
+    hora_inicio_marcacion = models.TimeField()
+    hora_fin_marcacion = models.TimeField()
+    activo = models.BooleanField(blank=True, null=True)
+    observacion = models.TextField(blank=True, null=True)
+    creado_por = models.ForeignKey('Usuario', models.DO_NOTHING, db_column='creado_por', blank=True, null=True)
+    actualizado_por = models.ForeignKey('Usuario', models.DO_NOTHING, db_column='actualizado_por', related_name='jornadaconfiguracion_actualizado_por_set', blank=True, null=True)
+    creado_at = models.DateTimeField(blank=True, null=True)
+    actualizado_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'jornada_configuracion'
+        unique_together = (('sede', 'dia_semana'),)
+
+
 class UsuarioManager(BaseUserManager):
     def create_user(self, dni, password=None, **extra_fields):
         if not dni:

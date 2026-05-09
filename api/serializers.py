@@ -1,13 +1,19 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion
 
 class SedeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sede
         fields = '__all__'
 
+class JornadaConfiguracionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JornadaConfiguracion
+        fields = '__all__'
+
 class RolSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = Rol
         fields = '__all__'

@@ -6,11 +6,13 @@ from .views import (
     UserProfileView, CustomTokenObtainPairView, TrackingConfigView,
     LocationPointCreateView, JourneyTrackingHistoryView, SyncStatusView,
     RolListView, TipoIncidenciaListView, SedeListCreateView, SedeDetailView, UsuarioViewSet,
-    IncidenciaListView, AsistenciaListView, ActividadHoyView, ActividadDetalleUsuarioView
+    IncidenciaListView, AsistenciaListView, ActividadHoyView, ActividadDetalleUsuarioView,
+    JornadaEstadoMarcacionView, JornadaConfiguracionViewSet
 )
 
 router = DefaultRouter()
 router.register(r'usuarios', UsuarioViewSet, basename='usuario')
+router.register(r'jornada-configuracion', JornadaConfiguracionViewSet, basename='jornada-configuracion')
 
 urlpatterns = [
     # Auth
@@ -22,6 +24,7 @@ urlpatterns = [
     # Attendance
     path('attendance/event/', AttendanceEventView.as_view(), name='attendance_event'),
     path('attendance/history/', AttendanceHistoryView.as_view(), name='attendance_history'),
+    path('jornada/estado-marcacion/', JornadaEstadoMarcacionView.as_view(), name='estado_marcacion'),
     
     # Incidents
     path('incidents/create/', IncidentCreateView.as_view(), name='incident_create'),

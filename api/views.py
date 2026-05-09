@@ -12,7 +12,7 @@ from .serializers import (
     SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
     IncidenciaSerializer, CustomTokenObtainPairSerializer,
     ConfiguracionTrackingSerializer, UbicacionPuntoSerializer,
-    RolSerializer, TipoIncidenciaSerializer
+    RolSerializer, TipoIncidenciaSerializer, JornadaConfiguracionSerializer
 )
 import math
 
@@ -49,7 +49,57 @@ class AttendanceEventView(generics.CreateAPIView):
         is_in_zone = distance <= sede.radio_metros
         
         today = timezone.now().date()
+        
+        asistencia_hoy = Asistencia.objects.filter(usuario=user, fecha=today).first()
+
+        # Validaciones de Estado
+        if event_type == 'ENTRADA':
+            if asistencia_hoy and asistencia_hoy.hora_entrada:
+                return Response({'error': 'Ya tiene una entrada registrada para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            from .models import JornadaConfiguracion
+            now = timezone.now()
+            dias_map = {
+                0: 'lunes', 1: 'martes', 2: 'miercoles', 
+                3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'
+            }
+            day_str = dias_map[now.weekday()]
+            
+            config = JornadaConfiguracion.objects.filter(sede=sede, dia_semana=day_str, activo=True).first()
+            
+            if not config:
+                return Response({'error': f'No hay una jornada configurada o activa para el día {day_str} en esta sede.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+            current_time = now.time()
+            if not (config.hora_inicio_marcacion <= current_time <= config.hora_fin_marcacion):
+                return Response({'error': f'Fuera de horario permitido. El horario de marcación es de {config.hora_inicio_marcacion} a {config.hora_fin_marcacion}.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+        elif event_type == 'INICIO_BREAK':
+            if not asistencia_hoy or not asistencia_hoy.hora_entrada:
+                return Response({'error': 'No puede iniciar break sin haber marcado entrada.'}, status=status.HTTP_400_BAD_REQUEST)
+            if asistencia_hoy.hora_inicio_break:
+                return Response({'error': 'Ya tiene un break registrado para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
+            if asistencia_hoy.hora_salida:
+                return Response({'error': 'No puede iniciar break si ya marcó salida.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+        elif event_type == 'FIN_BREAK':
+            if not asistencia_hoy or not asistencia_hoy.hora_inicio_break:
+                return Response({'error': 'No puede finalizar break sin haberlo iniciado.'}, status=status.HTTP_400_BAD_REQUEST)
+            if asistencia_hoy.hora_fin_break:
+                return Response({'error': 'Ya finalizó el break de hoy.'}, status=status.HTTP_400_BAD_REQUEST)
+            if asistencia_hoy.hora_salida:
+                return Response({'error': 'No puede finalizar break si ya marcó salida.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+        elif event_type == 'SALIDA':
+            if not asistencia_hoy or not asistencia_hoy.hora_entrada:
+                return Response({'error': 'No puede marcar salida sin haber marcado entrada.'}, status=status.HTTP_400_BAD_REQUEST)
+            if asistencia_hoy.hora_salida:
+                return Response({'error': 'Ya marcó salida para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
+            if asistencia_hoy.hora_inicio_break and not asistencia_hoy.hora_fin_break:
+                return Response({'error': 'No puede marcar salida con un break activo. Finalice el break primero.'}, status=status.HTTP_400_BAD_REQUEST)
+
         asistencia, created = Asistencia.objects.get_or_create(usuario=user, fecha=today)
+
         from .models import HistorialJornada
         historial, h_created = HistorialJornada.objects.get_or_create(
             asistencia=asistencia,
@@ -478,7 +528,85 @@ class SyncStatusView(APIView):
             'timestamp': max_ts.isoformat()
         })
 
+class JornadaEstadoMarcacionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        sede = user.sede
+        
+        if not sede:
+            return Response({'error': 'El usuario no tiene una sede asignada'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        now = timezone.now()
+        today = now.date()
+        
+        # Mapeo de días de la semana a español (según DB)
+        dias_map = {
+            0: 'lunes',
+            1: 'martes',
+            2: 'miercoles',
+            3: 'jueves',
+            4: 'viernes',
+            5: 'sabado',
+            6: 'domingo'
+        }
+        day_str = dias_map[now.weekday()]
+        
+        # Importar modelo localmente
+        from .models import JornadaConfiguracion, HistorialJornada, Asistencia
+        
+        # 3. Buscar configuración activa para la sede y el día
+        config = JornadaConfiguracion.objects.filter(sede=sede, dia_semana=day_str, activo=True).first()
+        
+        if not config:
+            return Response({
+                'puede_marcar_entrada': False,
+                'mensaje': f'No hay una jornada configurada o activa para el día {day_str} en esta sede.'
+            }, status=status.HTTP_200_OK)
+            
+        current_time = now.time()
+        
+        # 4. Validar si la hora actual está en el rango
+        within_hours = config.hora_inicio_marcacion <= current_time <= config.hora_fin_marcacion
+        
+        # 5. Validar si ya tiene asistencia o jornada creada
+        asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
+        historial = HistorialJornada.objects.filter(usuario=user, fecha=today).first()
+        
+        # 8. Si ya marcó entrada
+        if asistencia and asistencia.hora_entrada:
+            # 9. Si ya marcó salida y está cerrada
+            if asistencia.hora_salida or (historial and historial.cerrado):
+                return Response({
+                    'puede_marcar_entrada': False,
+                    'estado_jornada': 'cerrada',
+                    'mensaje': 'Ya completó su jornada de hoy.'
+                }, status=status.HTTP_200_OK)
+                
+            return Response({
+                'puede_marcar_entrada': False,
+                'estado_jornada': historial.estado_jornada if historial else 'en_proceso',
+                'mensaje': 'Ya marcó entrada. Su jornada está en curso.'
+            }, status=status.HTTP_200_OK)
+            
+        # 6. Si no tiene jornada y está dentro del horario
+        if within_hours:
+            return Response({
+                'puede_marcar_entrada': True,
+                'estado_jornada': 'no_iniciada',
+                'mensaje': 'Puede marcar entrada.'
+            }, status=status.HTTP_200_OK)
+        else:
+            # 7. Si está fuera del horario
+            return Response({
+                'puede_marcar_entrada': False,
+                'estado_jornada': 'no_iniciada',
+                'mensaje': f'Fuera de horario permitido. El horario de marcación es de {config.hora_inicio_marcacion} a {config.hora_fin_marcacion}.'
+            }, status=status.HTTP_200_OK)
+
 class ActividadHoyView(APIView):
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -649,3 +777,29 @@ class ActividadDetalleUsuarioView(APIView):
         }
         
         return Response(data)
+
+class JornadaConfiguracionViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = JornadaConfiguracionSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        from .models import JornadaConfiguracion, UsuarioSede
+        
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return JornadaConfiguracion.objects.all()
+            
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
+            return JornadaConfiguracion.objects.filter(sede_id__in=sedes_asignadas)
+            
+        return JornadaConfiguracion.objects.none()
+
+    def perform_create(self, serializer):
+        serializer.save(creado_por=self.request.user)
+
+    def perform_update(self, serializer):
+        serializer.save(actualizado_por=self.request.user)
+

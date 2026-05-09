@@ -559,11 +559,17 @@ class JornadaEstadoMarcacionView(APIView):
         # 3. Buscar configuración activa para la sede y el día
         config = JornadaConfiguracion.objects.filter(sede=sede, dia_semana=day_str, activo=True).first()
         
+        response_data = {
+            'hora_servidor': now.strftime('%H:%M:%S'),
+            'dia_servidor': day_str
+        }
+        
         if not config:
-            return Response({
+            response_data.update({
                 'puede_marcar_entrada': False,
                 'mensaje': f'No hay una jornada configurada o activa para el día {day_str} en esta sede.'
-            }, status=status.HTTP_200_OK)
+            })
+            return Response(response_data, status=status.HTTP_200_OK)
             
         current_time = now.time()
         
@@ -578,32 +584,36 @@ class JornadaEstadoMarcacionView(APIView):
         if asistencia and asistencia.hora_entrada:
             # 9. Si ya marcó salida y está cerrada
             if asistencia.hora_salida or (historial and historial.cerrado):
-                return Response({
+                response_data.update({
                     'puede_marcar_entrada': False,
                     'estado_jornada': 'cerrada',
                     'mensaje': 'Ya completó su jornada de hoy.'
-                }, status=status.HTTP_200_OK)
-                
-            return Response({
-                'puede_marcar_entrada': False,
-                'estado_jornada': historial.estado_jornada if historial else 'en_proceso',
-                'mensaje': 'Ya marcó entrada. Su jornada está en curso.'
-            }, status=status.HTTP_200_OK)
+                })
+            else:
+                response_data.update({
+                    'puede_marcar_entrada': False,
+                    'estado_jornada': historial.estado_jornada if historial else 'en_proceso',
+                    'mensaje': 'Ya marcó entrada. Su jornada está en curso.'
+                })
+            return Response(response_data, status=status.HTTP_200_OK)
             
         # 6. Si no tiene jornada y está dentro del horario
         if within_hours:
-            return Response({
+            response_data.update({
                 'puede_marcar_entrada': True,
                 'estado_jornada': 'no_iniciada',
                 'mensaje': 'Puede marcar entrada.'
-            }, status=status.HTTP_200_OK)
+            })
         else:
             # 7. Si está fuera del horario
-            return Response({
+            response_data.update({
                 'puede_marcar_entrada': False,
                 'estado_jornada': 'no_iniciada',
                 'mensaje': f'Fuera de horario permitido. El horario de marcación es de {config.hora_inicio_marcacion} a {config.hora_fin_marcacion}.'
-            }, status=status.HTTP_200_OK)
+            })
+            
+        return Response(response_data, status=status.HTTP_200_OK)
+
 
 class ActividadHoyView(APIView):
 

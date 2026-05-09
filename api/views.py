@@ -58,7 +58,7 @@ class AttendanceEventView(generics.CreateAPIView):
                 return Response({'error': 'Ya tiene una entrada registrada para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
             
             from .models import JornadaConfiguracion
-            now = timezone.now()
+            now = timezone.localtime(timezone.now())
             dias_map = {
                 0: 'lunes', 1: 'martes', 2: 'miercoles', 
                 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'
@@ -538,7 +538,7 @@ class JornadaEstadoMarcacionView(APIView):
         if not sede:
             return Response({'error': 'El usuario no tiene una sede asignada'}, status=status.HTTP_400_BAD_REQUEST)
             
-        now = timezone.now()
+        now = timezone.localtime(timezone.now())
         today = now.date()
         
         # Mapeo de días de la semana a español (según DB)

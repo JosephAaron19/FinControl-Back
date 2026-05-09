@@ -258,7 +258,32 @@ class JourneyTrackingHistoryView(generics.ListAPIView):
 
     def get_queryset(self):
         asistencia_id = self.kwargs.get('asistencia_id')
-        return UbicacionPunto.objects.filter(asistencia_id=asistencia_id).order_by('fecha_hora')
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        queryset = UbicacionPunto.objects.filter(asistencia_id=asistencia_id).order_by('fecha_hora')
+        
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return queryset
+            
+        # Validar si puede ver la asistencia
+        asistencia = Asistencia.objects.filter(id=asistencia_id).first()
+        if not asistencia:
+            return UbicacionPunto.objects.none()
+            
+        target_user = asistencia.usuario
+        
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
+            if target_user.creado_por == user or target_user.sede_id in sedes_asignadas:
+                return queryset
+            return UbicacionPunto.objects.none()
+        elif 'operador' in rol_nombre:
+            if target_user == user:
+                return queryset
+            return UbicacionPunto.objects.none()
+            
+        return UbicacionPunto.objects.none()
 
 class UserProfileView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
@@ -280,17 +305,81 @@ class TipoIncidenciaListView(generics.ListAPIView):
 
 class SedeListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Sede.objects.all()
     serializer_class = SedeSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        queryset = Sede.objects.all()
+        
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return queryset
+            
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            return queryset.filter(
+                Q(creado_por__rol__nombre__icontains='admin') | 
+                Q(creado_por__rol__nombre__icontains='gerente') |
+                Q(creado_por=user) |
+                Q(creado_por__isnull=True)
+            )
+        elif 'operador' in rol_nombre:
+            if user.sede_id:
+                return queryset.filter(id=user.sede_id)
+            return Sede.objects.none()
+            
+        return Sede.objects.none()
 
 class SedeDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Sede.objects.all()
     serializer_class = SedeSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        queryset = Sede.objects.all()
+        
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return queryset
+            
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            return queryset.filter(
+                Q(creado_por__rol__nombre__icontains='admin') | 
+                Q(creado_por__rol__nombre__icontains='gerente') |
+                Q(creado_por=user) |
+                Q(creado_por__isnull=True)
+            )
+        elif 'operador' in rol_nombre:
+            if user.sede_id:
+                return queryset.filter(id=user.sede_id)
+            return Sede.objects.none()
+            
+        return Sede.objects.none()
 
 class UsuarioViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
-    queryset = Usuario.objects.all().order_by('-creado_at')
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        queryset = Usuario.objects.all().order_by('-creado_at')
+        
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return queryset
+            
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            # Gerente ve solo operadores de sus sedes asignadas
+            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
+            return queryset.filter(
+                rol__nombre__icontains='operador',
+                sede_id__in=sedes_asignadas
+            )
+        elif 'operador' in rol_nombre:
+            return queryset.filter(id=user.id)
+            
+        return queryset.filter(id=user.id)
 
     def get_serializer_class(self):
         if self.action in ['create', 'update', 'partial_update']:
@@ -314,13 +403,45 @@ class UsuarioViewSet(viewsets.ModelViewSet):
 
 class IncidenciaListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Incidencia.objects.all().order_by('-fecha_hora_reporte')
     serializer_class = IncidenciaSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        queryset = Incidencia.objects.all().order_by('-fecha_hora_reporte')
+        
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return queryset
+            
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
+            return queryset.filter(usuario__sede_id__in=sedes_asignadas)
+        elif 'operador' in rol_nombre:
+            return queryset.filter(usuario=user)
+            
+        return queryset.filter(usuario=user)
 
 class AsistenciaListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Asistencia.objects.all().order_by('-fecha')
     serializer_class = AsistenciaSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        queryset = Asistencia.objects.all().order_by('-fecha')
+        
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return queryset
+            
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
+            return queryset.filter(usuario__sede_id__in=sedes_asignadas)
+        elif 'operador' in rol_nombre:
+            return queryset.filter(usuario=user)
+            
+        return queryset.filter(usuario=user)
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
@@ -381,11 +502,9 @@ class ActividadHoyView(APIView):
         
         # Aplicar restricciones por rol
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Gerente ve creados por él O de sus sedes asignadas
+            # Gerente ve solo operadores de sus sedes asignadas
             sedes_asignadas = UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True)
-            usuarios = usuarios.filter(
-                Q(creado_por=current_user) | Q(sede_id__in=sedes_asignadas)
-            )
+            usuarios = usuarios.filter(sede_id__in=sedes_asignadas)
         elif 'operador' in rol_nombre:
             # Operador solo se ve a sí mismo
             usuarios = usuarios.filter(id=current_user.id)

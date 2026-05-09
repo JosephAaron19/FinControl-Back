@@ -48,7 +48,10 @@ class AttendanceEventView(generics.CreateAPIView):
         distance = calculate_distance(lat, lon, sede.latitud, sede.longitud)
         is_in_zone = distance <= sede.radio_metros
         
-        today = timezone.now().date()
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo('America/Lima'))
+        today = now_local.date()
         
         asistencia_hoy = Asistencia.objects.filter(usuario=user, fecha=today).first()
 
@@ -58,19 +61,18 @@ class AttendanceEventView(generics.CreateAPIView):
                 return Response({'error': 'Ya tiene una entrada registrada para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
             
             from .models import JornadaConfiguracion
-            now = timezone.localtime(timezone.now())
             dias_map = {
                 0: 'lunes', 1: 'martes', 2: 'miercoles', 
                 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'
             }
-            day_str = dias_map[now.weekday()]
+            day_str = dias_map[now_local.weekday()]
             
             config = JornadaConfiguracion.objects.filter(sede=sede, dia_semana=day_str, activo=True).first()
             
             if not config:
                 return Response({'error': f'No hay una jornada configurada o activa para el día {day_str} en esta sede.'}, status=status.HTTP_400_BAD_REQUEST)
                 
-            current_time = now.time()
+            current_time = now_local.time()
             if not (config.hora_inicio_marcacion <= current_time <= config.hora_fin_marcacion):
                 return Response({'error': f'Fuera de horario permitido. El horario de marcación es de {config.hora_inicio_marcacion} a {config.hora_fin_marcacion}.'}, status=status.HTTP_400_BAD_REQUEST)
                 
@@ -538,7 +540,9 @@ class JornadaEstadoMarcacionView(APIView):
         if not sede:
             return Response({'error': 'El usuario no tiene una sede asignada'}, status=status.HTTP_400_BAD_REQUEST)
             
-        now = timezone.localtime(timezone.now())
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo('America/Lima'))
         today = now.date()
         
         # Mapeo de días de la semana a español (según DB)

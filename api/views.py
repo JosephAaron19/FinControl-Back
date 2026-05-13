@@ -734,9 +734,11 @@ class ActividadHoyView(APIView):
         
         # Aplicar restricciones por rol
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Gerente ve solo operadores de sus sedes asignadas
-            sedes_asignadas = UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True)
-            usuarios = usuarios.filter(sede_id__in=sedes_asignadas)
+            # Gerente ve operadores de sus sedes asignadas o su sede principal
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if current_user.sede_id:
+                sedes_ids.append(current_user.sede_id)
+            usuarios = usuarios.filter(sede_id__in=sedes_ids)
         elif 'operador' in rol_nombre:
             # Operador solo se ve a sí mismo
             usuarios = usuarios.filter(id=current_user.id)
@@ -933,8 +935,10 @@ class JornadaConfiguracionViewSet(viewsets.ModelViewSet):
             return JornadaConfiguracion.objects.all()
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
-            return JornadaConfiguracion.objects.filter(sede_id__in=sedes_asignadas)
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_ids.append(user.sede_id)
+            return JornadaConfiguracion.objects.filter(sede_id__in=sedes_ids)
             
         return JornadaConfiguracion.objects.none()
 

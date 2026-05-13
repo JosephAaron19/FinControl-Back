@@ -6,7 +6,8 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
-from django.db.models import Q
+from zoneinfo import ZoneInfo
+from django.db import transaction
 from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede
 from .serializers import (
     SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
@@ -30,6 +31,7 @@ class AttendanceEventView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = AsistenciaSerializer
 
+    @transaction.atomic
     def post(self, request, *args, **kwargs):
         user = request.user
         event_type = request.data.get('type')  # 'ENTRADA', 'SALIDA', 'INICIO_BREAK', 'FIN_BREAK'
@@ -56,41 +58,39 @@ class AttendanceEventView(generics.CreateAPIView):
         asistencia_hoy = Asistencia.objects.filter(usuario=user, fecha=today).first()
 
         # Validaciones de Estado
+        from .models import JornadaConfiguracion
+        dias_map = {0: 'lunes', 1: 'martes', 2: 'miercoles', 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'}
+        day_name = dias_map[now_local.weekday()]
+        config = JornadaConfiguracion.objects.filter(sede=sede, dia_semana=day_name, activo=True).first()
+
+        if not config:
+            return Response({'error': f'No hay una jornada configurada o activa para el día {day_name} en esta sede.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        current_time = now_local.time()
+
         if event_type == 'ENTRADA':
             if asistencia_hoy and asistencia_hoy.hora_entrada:
                 return Response({'error': 'Ya tiene una entrada registrada para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
             
-            from .models import JornadaConfiguracion
-            dias_map = {
-                0: 'lunes', 1: 'martes', 2: 'miercoles', 
-                3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'
-            }
-            day_str = dias_map[now_local.weekday()]
-            
-            config = JornadaConfiguracion.objects.filter(sede=sede, dia_semana=day_str, activo=True).first()
-            
-            if not config:
-                return Response({'error': f'No hay una jornada configurada o activa para el día {day_str} en esta sede.'}, status=status.HTTP_400_BAD_REQUEST)
-                
-            current_time = now_local.time()
-            if not (config.hora_inicio_marcacion <= current_time <= config.hora_fin_marcacion):
-                return Response({'error': f'Fuera de horario permitido. El horario de marcación es de {config.hora_inicio_marcacion} a {config.hora_fin_marcacion}.'}, status=status.HTTP_400_BAD_REQUEST)
+            if current_time < config.hora_inicio_marcacion:
+                return Response({'error': f'Aún no puede marcar entrada. El horario de marcación inicia a las {config.hora_inicio_marcacion}.'}, status=status.HTTP_400_BAD_REQUEST)
                 
         elif event_type == 'INICIO_BREAK':
             if not asistencia_hoy or not asistencia_hoy.hora_entrada:
-                return Response({'error': 'No puede iniciar break sin haber marcado entrada.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Debe marcar entrada antes de iniciar su descanso.'}, status=status.HTTP_400_BAD_REQUEST)
+            
             if asistencia_hoy.hora_inicio_break:
-                return Response({'error': 'Ya tiene un break registrado para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Ya tiene un descanso registrado para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
             if asistencia_hoy.hora_salida:
-                return Response({'error': 'No puede iniciar break si ya marcó salida.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'No puede iniciar descanso si ya marcó salida.'}, status=status.HTTP_400_BAD_REQUEST)
                 
         elif event_type == 'FIN_BREAK':
             if not asistencia_hoy or not asistencia_hoy.hora_inicio_break:
-                return Response({'error': 'No puede finalizar break sin haberlo iniciado.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'No puede finalizar descanso sin haberlo iniciado.'}, status=status.HTTP_400_BAD_REQUEST)
             if asistencia_hoy.hora_fin_break:
-                return Response({'error': 'Ya finalizó el break de hoy.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Ya finalizó el descanso de hoy.'}, status=status.HTTP_400_BAD_REQUEST)
             if asistencia_hoy.hora_salida:
-                return Response({'error': 'No puede finalizar break si ya marcó salida.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'No puede finalizar descanso si ya marcó salida.'}, status=status.HTTP_400_BAD_REQUEST)
                 
         elif event_type == 'SALIDA':
             if not asistencia_hoy or not asistencia_hoy.hora_entrada:
@@ -98,7 +98,14 @@ class AttendanceEventView(generics.CreateAPIView):
             if asistencia_hoy.hora_salida:
                 return Response({'error': 'Ya marcó salida para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
             if asistencia_hoy.hora_inicio_break and not asistencia_hoy.hora_fin_break:
-                return Response({'error': 'No puede marcar salida con un break activo. Finalice el break primero.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'No puede marcar salida con un descanso activo. Finalice el descanso primero.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Validar rango de salida si existe en la configuración
+            if config.hora_inicio_salida:
+                if current_time < config.hora_inicio_salida:
+                    return Response({'error': f'Aún no puede marcar salida. El horario de salida inicia a las {config.hora_inicio_salida}.'}, status=status.HTTP_400_BAD_REQUEST)
+                if config.hora_fin_salida and current_time > config.hora_fin_salida:
+                    return Response({'error': f'El horario permitido para marcar salida ya finalizó ({config.hora_fin_salida}).'}, status=status.HTTP_400_BAD_REQUEST)
 
         asistencia, created = Asistencia.objects.get_or_create(usuario=user, fecha=today)
 
@@ -125,6 +132,26 @@ class AttendanceEventView(generics.CreateAPIView):
             historial.entrada_fuera_de_zona = not is_in_zone
             historial.distancia_entrada_metros = distance
             historial.dispositivo_entrada = device_info
+            
+            # Determinar si es puntual o tardanza
+            from zoneinfo import ZoneInfo
+            now_local = now.astimezone(ZoneInfo('America/Lima'))
+            current_time = now_local.time()
+            
+            # Determinar estado de puntualidad
+            asistencia.estado = 'puntual' if current_time <= config.hora_fin_marcacion else 'tardanza'
+            
+            # Verificar si tiene una incidencia aprobada para hoy que justifique la tardanza
+            from .models import Incidencia
+            incidencia_aprobada = Incidencia.objects.filter(
+                usuario=user, 
+                fecha_hora_reporte__date=today,
+                estado_revision='Aprobado'
+            ).exists()
+            
+            if incidencia_aprobada:
+                asistencia.estado = 'justificado'
+            
             historial.estado_jornada = 'en_proceso'
             
         elif event_type == 'SALIDA':
@@ -144,6 +171,13 @@ class AttendanceEventView(generics.CreateAPIView):
             
         elif event_type == 'INICIO_BREAK':
             asistencia.hora_inicio_break = now
+            
+            # Si no había marcado entrada, marcar como tardanza o justificado
+            if not asistencia.hora_entrada:
+                asistencia.estado = 'tardanza'
+                from .models import Incidencia
+                if Incidencia.objects.filter(usuario=user, fecha_hora_reporte__date=today, estado_revision='Aprobado').exists():
+                    asistencia.estado = 'justificado'
             
             historial.hora_inicio_break = now
             historial.latitud_inicio_break = lat
@@ -166,7 +200,7 @@ class AttendanceEventView(generics.CreateAPIView):
         else:
             return Response({'error': 'Tipo de evento inválido'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Actualizar estado si está fuera de zona
+        # Actualizar estado si está fuera de zona (solo si no es ya Tardanza o similar que tenga prioridad?)
         if not is_in_zone:
             asistencia.estado = 'Observado'
         elif asistencia.estado == 'Sin Marcar':
@@ -205,6 +239,22 @@ class AttendanceEventView(generics.CreateAPIView):
             origen='manual',
             dispositivo_info=device_info
         )
+
+        # Notificar en tiempo real a través de WebSockets
+        try:
+            from asgiref.sync import async_to_sync
+            from channels.layers import get_channel_layer
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                "system_notifications",
+                {
+                    'type': 'send_notification',
+                    'message': f'{user.nombre_completo} ha marcado {event_type}.',
+                    'notification_type': 'attendance_update'
+                }
+            )
+        except Exception as e:
+            print(f"Error enviando notificación socket: {e}")
 
         return Response({
             'asistencia_id': asistencia.id,
@@ -579,42 +629,87 @@ class JornadaEstadoMarcacionView(APIView):
         
         # 4. Validar si la hora actual está en el rango
         within_hours = config.hora_inicio_marcacion <= current_time <= config.hora_fin_marcacion
+        after_entrance_range = current_time > config.hora_fin_marcacion
         
         # 5. Validar si ya tiene asistencia o jornada creada
         asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
         historial = HistorialJornada.objects.filter(usuario=user, fecha=today).first()
         
-        # 8. Si ya marcó entrada
-        if asistencia and asistencia.hora_entrada:
-            # 9. Si ya marcó salida y está cerrada
-            if asistencia.hora_salida or (historial and historial.cerrado):
-                response_data.update({
-                    'puede_marcar_entrada': False,
-                    'estado_jornada': 'cerrada',
-                    'mensaje': 'Ya completó su jornada de hoy.'
-                })
+        puede_marcar_entrada = False
+        puede_iniciar_descanso = False
+        puede_finalizar_descanso = False
+        puede_marcar_salida = False
+        estado_jornada = 'no_iniciada'
+        
+        # Lógica de botones
+        asistencia_estado = 'no_marco_entrada' # Default si no hay asistencia y terminó el rango
+        
+        if not asistencia or not asistencia.hora_entrada:
+            if current_time >= config.hora_inicio_marcacion:
+                puede_marcar_entrada = True
+                estado_jornada = 'no_iniciada'
+                
+                if within_hours:
+                    asistencia_estado = 'Sin Marcar'
+                    mensaje = 'Puede marcar entrada puntual.'
+                else:
+                    asistencia_estado = 'no_marco_entrada'
+                    mensaje = 'Rango de entrada finalizado. Puede marcar entrada (Tardanza).'
             else:
-                response_data.update({
-                    'puede_marcar_entrada': False,
-                    'estado_jornada': historial.estado_jornada if historial else 'en_proceso',
-                    'mensaje': 'Ya marcó entrada. Su jornada está en curso.'
-                })
-            return Response(response_data, status=status.HTTP_200_OK)
-            
-        # 6. Si no tiene jornada y está dentro del horario
-        if within_hours:
-            response_data.update({
-                'puede_marcar_entrada': True,
-                'estado_jornada': 'no_iniciada',
-                'mensaje': 'Puede marcar entrada.'
-            })
+                # Antes del horario de inicio (ej. llega demasiado temprano)
+                puede_marcar_entrada = False
+                asistencia_estado = 'Sin Marcar'
+                estado_jornada = 'no_iniciada'
+                mensaje = f'Fuera de horario. El horario de marcación inicia a las {config.hora_inicio_marcacion}.'
         else:
-            # 7. Si está fuera del horario
-            response_data.update({
-                'puede_marcar_entrada': False,
-                'estado_jornada': 'no_iniciada',
-                'mensaje': f'Fuera de horario permitido. El horario de marcación es de {config.hora_inicio_marcacion} a {config.hora_fin_marcacion}.'
-            })
+            asistencia_estado = asistencia.estado
+        
+        # Si ya marcó entrada o ya está en flujo
+        if asistencia:
+            if asistencia.hora_salida or (historial and historial.cerrado):
+                puede_marcar_entrada = False
+                puede_iniciar_descanso = False
+                puede_finalizar_descanso = False
+                puede_marcar_salida = False
+                estado_jornada = 'cerrada'
+                mensaje = 'Ya completó su jornada de hoy.'
+            else:
+                # Jornada en curso
+                estado_jornada = historial.estado_jornada if historial else 'en_proceso'
+                
+                if not asistencia.hora_inicio_break:
+                    puede_iniciar_descanso = True
+                    mensaje = 'Jornada en curso. Puede iniciar descanso.'
+                elif not asistencia.hora_fin_break:
+                    puede_finalizar_descanso = True
+                    mensaje = 'En descanso. Marque el fin del descanso para continuar.'
+                else:
+                    # Validar rango de salida si existe en la configuración
+                    within_exit_range = True
+                    if config.hora_inicio_salida:
+                        within_exit_range = current_time >= config.hora_inicio_salida
+                        if config.hora_fin_salida:
+                            within_exit_range = within_exit_range and current_time <= config.hora_fin_salida
+                    
+                    if within_exit_range:
+                        puede_marcar_salida = True
+                        mensaje = 'Descanso finalizado. Puede marcar su salida.'
+                    else:
+                        puede_marcar_salida = False
+                        if config.hora_inicio_salida and current_time < config.hora_inicio_salida:
+                            mensaje = f'Aún no puede marcar salida. El horario de salida inicia a las {config.hora_inicio_salida}.'
+                        else:
+                            mensaje = 'Fuera de rango para marcar salida.'
+
+        response_data.update({
+            'puede_marcar_entrada': puede_marcar_entrada,
+            'puede_iniciar_descanso': puede_iniciar_descanso,
+            'puede_finalizar_descanso': puede_finalizar_descanso,
+            'puede_marcar_salida': puede_marcar_salida,
+            'estado_jornada': estado_jornada,
+            'mensaje': mensaje,
+            'asistencia_estado': asistencia_estado
+        })
             
         return Response(response_data, status=status.HTTP_200_OK)
 
@@ -660,24 +755,36 @@ class ActividadHoyView(APIView):
             
             # Determinar estado
             estado = 'Sin Marcar'
+            
+            # 1. Obtener configuración de jornada para este usuario hoy
+            from .models import JornadaConfiguracion
+            from zoneinfo import ZoneInfo
+            dias_map = {0: 'lunes', 1: 'martes', 2: 'miercoles', 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'}
+            day_name = dias_map[timezone.now().weekday()]
+            config = JornadaConfiguracion.objects.filter(sede=user.sede, dia_semana=day_name, activo=True).first()
+            current_time = timezone.now().astimezone(ZoneInfo('America/Lima')).time()
+
             if asistencia:
                 if asistencia.hora_salida:
                     estado = 'Salida'
-                elif asistencia.hora_fin_break:
-                    estado = 'Presente'
-                elif asistencia.hora_inicio_break:
+                elif asistencia.hora_inicio_break and not asistencia.hora_fin_break:
                     estado = 'En Break'
-                elif asistencia.hora_entrada:
+                else:
                     estado = 'Presente'
                 
-                if asistencia.estado == 'Observado':
-                    estado = 'Observado'
+                # Sobrescribir con estados especiales si existen
+                if asistencia.estado:
+                    # Normalizar a Title Case para visualización
+                    estado = asistencia.estado.capitalize()
+            elif config and current_time > config.hora_fin_marcacion:
+                # Si no ha marcado y ya pasó el rango
+                estado = 'No marcó entrada'
                     
             # Fuera de zona flag
             fuera_de_zona = False
             if ultimo_punto:
                 fuera_de_zona = ultimo_punto.es_fuera_de_zona
-            elif asistencia and asistencia.estado == 'Observado':
+            elif asistencia and (asistencia.estado == 'Observado' or asistencia.estado == 'observado'):
                 fuera_de_zona = True
                 
             data.append({
@@ -763,6 +870,21 @@ class ActividadDetalleUsuarioView(APIView):
             
         ultimo_punto = puntos_gps.last()
         
+        # Determinar estado detallado para visualización
+        estado_asistencia = 'Sin Marcar'
+        if asistencia:
+            estado_asistencia = asistencia.estado.capitalize() if asistencia.estado else 'Presente'
+        else:
+            # Verificar si ya pasó el rango de entrada sin marcar
+            from .models import JornadaConfiguracion
+            from zoneinfo import ZoneInfo
+            dias_map = {0: 'lunes', 1: 'martes', 2: 'miercoles', 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'}
+            day_name = dias_map[timezone.now().weekday()]
+            config = JornadaConfiguracion.objects.filter(sede=user.sede, dia_semana=day_name, activo=True).first()
+            current_time = timezone.now().astimezone(ZoneInfo('America/Lima')).time()
+            if config and current_time > config.hora_fin_marcacion:
+                estado_asistencia = 'No marcó entrada'
+
         data = {
             'usuario': {
                 'id': user.id,
@@ -776,7 +898,7 @@ class ActividadDetalleUsuarioView(APIView):
                 'hora_inicio_break': asistencia.hora_inicio_break if asistencia else None,
                 'hora_fin_break': asistencia.hora_fin_break if asistencia else None,
                 'hora_salida': asistencia.hora_salida if asistencia else None,
-                'estado': asistencia.estado if asistencia else 'Sin Marcar'
+                'estado': estado_asistencia
             },
             'resumen_gps': {
                 'total_puntos': puntos_gps.count(),
@@ -812,8 +934,26 @@ class JornadaConfiguracionViewSet(viewsets.ModelViewSet):
         return JornadaConfiguracion.objects.none()
 
     def perform_create(self, serializer):
-        serializer.save(creado_por=self.request.user)
+        config = serializer.save(creado_por=self.request.user)
+        self.notify_config_change(config)
 
     def perform_update(self, serializer):
-        serializer.save(actualizado_por=self.request.user)
+        config = serializer.save(actualizado_por=self.request.user)
+        self.notify_config_change(config)
+
+    def notify_config_change(self, config):
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        channel_layer = get_channel_layer()
+        
+        # Notificar a los usuarios de la sede
+        group_name = f"sede_{config.sede.id}"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                'type': 'send_notification',
+                'message': f'Se ha actualizado la configuración de jornada.',
+                'notification_type': 'config_update'
+            }
+        )
 

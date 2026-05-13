@@ -59,19 +59,26 @@ class Sede(models.Model):
 class JornadaConfiguracion(models.Model):
     sede = models.ForeignKey('Sede', models.DO_NOTHING)
     dia_semana = models.CharField(max_length=20)
+    # Rango para entrada puntual
     hora_inicio_marcacion = models.TimeField()
     hora_fin_marcacion = models.TimeField()
-    activo = models.BooleanField(blank=True, null=True)
+    # Rango para salida permitida
+    hora_inicio_salida = models.TimeField(null=True, blank=True)
+    hora_fin_salida = models.TimeField(null=True, blank=True)
+    
+    activo = models.BooleanField(default=True, blank=True, null=True)
     observacion = models.TextField(blank=True, null=True)
     creado_por = models.ForeignKey('Usuario', models.DO_NOTHING, db_column='creado_por', blank=True, null=True)
     actualizado_por = models.ForeignKey('Usuario', models.DO_NOTHING, db_column='actualizado_por', related_name='jornadaconfiguracion_actualizado_por_set', blank=True, null=True)
-    creado_at = models.DateTimeField(blank=True, null=True)
-    actualizado_at = models.DateTimeField(blank=True, null=True)
+    creado_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
+    actualizado_at = models.DateTimeField(auto_now=True, blank=True, null=True)
 
     class Meta:
-        managed = False
+        managed = True
         db_table = 'jornada_configuracion'
         unique_together = (('sede', 'dia_semana'),)
+        verbose_name = 'Configuración de Jornada'
+        verbose_name_plural = 'Configuraciones de Jornada'
 
 
 class UsuarioManager(BaseUserManager):

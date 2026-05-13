@@ -6,3 +6,5 @@ Pillow
 djangorestframework-simplejwt
 python-dotenv
 gunicorn
+daphne
+channels

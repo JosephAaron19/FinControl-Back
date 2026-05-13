@@ -7,7 +7,8 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from zoneinfo import ZoneInfo
-from django.db import transaction
+from django.db import transaction, models
+from django.db.models import Q
 from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede
 from .serializers import (
     SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
@@ -462,12 +463,12 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Gerente ve solo operadores de sus sedes asignadas
-            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
-            return queryset.filter(
-                rol__nombre__icontains='operador',
-                sede_id__in=sedes_asignadas
-            )
+            # Gerente ve usuarios ÚNICAMENTE de sus sedes asignadas o su sede principal
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_ids.append(user.sede_id)
+            
+            return queryset.filter(sede_id__in=sedes_ids)
         elif 'operador' in rol_nombre:
             return queryset.filter(id=user.id)
             
@@ -507,8 +508,10 @@ class IncidenciaListView(generics.ListAPIView):
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
-            return queryset.filter(usuario__sede_id__in=sedes_asignadas)
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_ids.append(user.sede_id)
+            return queryset.filter(usuario__sede_id__in=sedes_ids)
         elif 'operador' in rol_nombre:
             return queryset.filter(usuario=user)
             
@@ -528,8 +531,10 @@ class AsistenciaListView(generics.ListAPIView):
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
-            return queryset.filter(usuario__sede_id__in=sedes_asignadas)
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_ids.append(user.sede_id)
+            return queryset.filter(usuario__sede_id__in=sedes_ids)
         elif 'operador' in rol_nombre:
             return queryset.filter(usuario=user)
             

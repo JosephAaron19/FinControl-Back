@@ -14,19 +14,23 @@ from .serializers import (
     SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
     IncidenciaSerializer, CustomTokenObtainPairSerializer,
     ConfiguracionTrackingSerializer, UbicacionPuntoSerializer,
-    RolSerializer, TipoIncidenciaSerializer, JornadaConfiguracionSerializer
+    RolSerializer, TipoIncidenciaSerializer, JornadaConfiguracionSerializer,
+    HistorialJornadaSerializer
 )
 import math
 
 def calculate_distance(lat1, lon1, lat2, lon2):
-    # Haversine formula
-    R = 6371000  # Earth radius in meters
-    phi1, phi2 = math.radians(float(lat1)), math.radians(float(lat2))
-    dphi = math.radians(float(lat2) - float(lat1))
-    dlambda = math.radians(float(lon2) - float(lon1))
-    a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+    try:
+        # Haversine formula
+        R = 6371000  # Earth radius in meters
+        phi1, phi2 = math.radians(float(lat1)), math.radians(float(lat2))
+        dphi = math.radians(float(lat2) - float(lat1))
+        dlambda = math.radians(float(lon2) - float(lon1))
+        a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
+    except (TypeError, ValueError, AttributeError):
+        return 9999999  # Retornar una distancia muy grande si hay error de datos
 
 class AttendanceEventView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
@@ -48,8 +52,11 @@ class AttendanceEventView(generics.CreateAPIView):
         if not sede:
             return Response({'error': 'El usuario no tiene una sede asignada'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if sede.latitud is None or sede.longitud is None:
+            return Response({'error': 'La sede no tiene coordenadas configuradas. Por favor, contacte al administrador.'}, status=status.HTTP_400_BAD_REQUEST)
+
         distance = calculate_distance(lat, lon, sede.latitud, sede.longitud)
-        is_in_zone = distance <= sede.radio_metros
+        is_in_zone = distance <= (sede.radio_metros or 100)
         
         from datetime import datetime
         from zoneinfo import ZoneInfo
@@ -278,8 +285,26 @@ class IncidentCreateView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = IncidenciaSerializer
 
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        today = timezone.now().date()
+        asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
+        
+        # Validar si el usuario ha marcado entrada y NO ha marcado salida
+        if not asistencia or not asistencia.hora_entrada:
+            return Response({
+                'error': 'No puede enviar su reporte porque no ha iniciado su jornada (marcado entrada).'
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        if asistencia.hora_salida:
+            return Response({
+                'error': 'No puede enviar su reporte porque ya finalizó su jornada (marcado salida).'
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        return super().post(request, *args, **kwargs)
+
     def perform_create(self, serializer):
-        # Obtener la asistencia del día actual para vincular la incidencia si existe
+        # Obtener la asistencia del día actual para vincular la incidencia
         today = timezone.now().date()
         asistencia = Asistencia.objects.filter(usuario=self.request.user, fecha=today).first()
         serializer.save(usuario=self.request.user, asistencia=asistencia)
@@ -398,8 +423,19 @@ class UserProfileView(generics.RetrieveAPIView):
 # Web Dashboard Views
 class RolListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    queryset = Rol.objects.all()
     serializer_class = RolSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        queryset = Rol.objects.all()
+        
+        # Gerentes solo pueden ver/asignar el rol de Operador
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            return queryset.filter(nombre__icontains='operador')
+            
+        return queryset
 
 class TipoIncidenciaListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
@@ -456,19 +492,24 @@ class UsuarioViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        solo_operadores = self.request.query_params.get('solo_operadores') == 'true'
         
         queryset = Usuario.objects.all().order_by('-creado_at')
         
+        # Si se solicita explícitamente solo operadores (ej. desde el historial)
+        if solo_operadores:
+            queryset = queryset.filter(rol__nombre__icontains='operador')
+            
         if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Gerente ve usuarios ÚNICAMENTE de sus sedes asignadas o su sede principal
+            # Gerente ve usuarios ÚNICAMENTE de sus sedes asignadas y que sean OPERADORES
             sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
             if user.sede_id:
                 sedes_ids.append(user.sede_id)
             
-            return queryset.filter(sede_id__in=sedes_ids)
+            return queryset.filter(sede_id__in=sedes_ids, rol__nombre__icontains='operador')
         elif 'operador' in rol_nombre:
             return queryset.filter(id=user.id)
             
@@ -833,9 +874,12 @@ class ActividadDetalleUsuarioView(APIView):
         rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
         
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Validar si puede ver este usuario
-            sedes_asignadas = UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True)
-            if user.creado_por != current_user and user.sede_id not in sedes_asignadas:
+            # Validar si puede ver este usuario (sedes asignadas o su propia sede)
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if current_user.sede_id:
+                sedes_ids.append(current_user.sede_id)
+                
+            if user.creado_por != current_user and user.sede_id not in sedes_ids:
                 return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
         elif 'operador' in rol_nombre and current_user.id != user.id:
             return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
@@ -872,7 +916,8 @@ class ActividadDetalleUsuarioView(APIView):
                 'tipo': inc.tipo_incidencia_0.nombre if inc.tipo_incidencia_0 else inc.tipo_incidencia,
                 'descripcion': inc.descripcion,
                 'fecha_hora_reporte': inc.fecha_hora_reporte,
-                'estado': inc.estado_revision
+                'estado': inc.estado_revision,
+                'foto': inc.foto_evidencia_url.url if inc.foto_evidencia_url else (inc.evidencia_url if inc.evidencia_url else None)
             })
             
         ultimo_punto = puntos_gps.last()
@@ -965,4 +1010,116 @@ class JornadaConfiguracionViewSet(viewsets.ModelViewSet):
                 'notification_type': 'config_update'
             }
         )
+
+class HistorialJornadaListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = HistorialJornadaSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        # El historial solo debe mostrar registros de operadores
+        queryset = HistorialJornada.objects.filter(usuario__rol__nombre__icontains='operador').order_by('-fecha', '-hora_entrada')
+        
+        # Filtros opcionales
+        usuario_id = self.request.query_params.get('usuario')
+        fecha_inicio = self.request.query_params.get('fecha_inicio')
+        fecha_fin = self.request.query_params.get('fecha_fin')
+        
+        if usuario_id:
+            queryset = queryset.filter(usuario_id=usuario_id)
+        if fecha_inicio:
+            queryset = queryset.filter(fecha__gte=fecha_inicio)
+        if fecha_fin:
+            queryset = queryset.filter(fecha__lte=fecha_fin)
+
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return queryset
+            
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            from .models import UsuarioSede
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_ids.append(user.sede_id)
+            return queryset.filter(usuario__sede_id__in=sedes_ids)
+        elif 'operador' in rol_nombre:
+            return queryset.filter(usuario=user)
+            
+        return queryset.filter(usuario=user)
+
+class HistorialJornadaDetalleView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        historial = HistorialJornada.objects.filter(id=pk).first()
+        if not historial:
+            return Response({'error': 'Registro no encontrado'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Validar permisos
+        current_user = request.user
+        rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
+        
+        can_view = False
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            can_view = True
+        elif 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            from .models import UsuarioSede
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if current_user.sede_id:
+                sedes_ids.append(current_user.sede_id)
+            if historial.usuario.sede_id in sedes_ids:
+                can_view = True
+        elif historial.usuario == current_user:
+            can_view = True
+            
+        if not can_view:
+            return Response({'error': 'No tiene permisos para ver este registro'}, status=status.HTTP_403_FORBIDDEN)
+            
+        asistencia = historial.asistencia
+        eventos = AsistenciaEvento.objects.filter(asistencia=asistencia).order_by('fecha_hora')
+        incidencias = Incidencia.objects.filter(asistencia=asistencia).order_by('fecha_hora_reporte')
+        puntos_gps = UbicacionPunto.objects.filter(asistencia=asistencia).order_by('fecha_hora')
+        
+        data = {
+            'id': historial.id,
+            'fecha': historial.fecha,
+            'usuario': {
+                'id': historial.usuario.id,
+                'nombre_completo': historial.usuario.nombre_completo,
+                'dni': historial.usuario.dni,
+                'cargo': historial.usuario.cargo
+            },
+            'resumen': {
+                'hora_entrada': historial.hora_entrada,
+                'hora_salida': historial.hora_salida,
+                'total_horas': str(historial.total_horas_trabajadas) if historial.total_horas_trabajadas else "0:00:00",
+                'total_break': str(historial.total_tiempo_break) if historial.total_tiempo_break else "0:00:00",
+                'estado': historial.estado_jornada or 'Completada',
+                'cantidad_marcaciones': historial.cantidad_marcaciones
+            },
+            'eventos': [{
+                'id': e.id,
+                'tipo': e.tipo_evento,
+                'hora': e.fecha_hora,
+                'es_fuera_de_zona': e.es_fuera_de_zona,
+                'distancia': float(e.distancia_sede_metros) if e.distancia_sede_metros else 0
+            } for e in eventos],
+            'incidencias': [{
+                'id': inc.id,
+                'tipo': inc.tipo_incidencia_0.nombre if inc.tipo_incidencia_0 else inc.tipo_incidencia,
+                'descripcion': inc.descripcion,
+                'hora': inc.fecha_hora_reporte,
+                'estado': inc.estado_revision,
+                'foto': inc.foto_evidencia_url.url if inc.foto_evidencia_url else (inc.evidencia_url if inc.evidencia_url else None)
+            } for inc in incidencias],
+            'gps': [{
+                'lat': float(p.latitud),
+                'lng': float(p.longitud),
+                'hora': p.fecha_hora,
+                'fuera_de_zona': p.es_fuera_de_zona
+            } for p in puntos_gps]
+        }
+        
+        return Response(data)
 

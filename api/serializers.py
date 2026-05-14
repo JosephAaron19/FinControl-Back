@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion, HistorialJornada
 
 class SedeSerializer(serializers.ModelSerializer):
     class Meta:
@@ -111,3 +111,17 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
                 raise serializers.ValidationError({"detail": "Usuario no encontrado."})
                 
         return data
+
+class HistorialJornadaSerializer(serializers.ModelSerializer):
+    usuario_nombre = serializers.ReadOnlyField(source='usuario.nombre_completo')
+    sede_nombre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HistorialJornada
+        fields = '__all__'
+
+    def get_sede_nombre(self, obj):
+        if obj.sede_id:
+            sede = Sede.objects.filter(id=obj.sede_id).first()
+            return sede.nombre if sede else f"Sede {obj.sede_id}"
+        return "-"

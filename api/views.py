@@ -248,21 +248,8 @@ class AttendanceEventView(generics.CreateAPIView):
             dispositivo_info=device_info
         )
 
-        # Notificar en tiempo real a través de WebSockets
-        try:
-            from asgiref.sync import async_to_sync
-            from channels.layers import get_channel_layer
-            channel_layer = get_channel_layer()
-            async_to_sync(channel_layer.group_send)(
-                "system_notifications",
-                {
-                    'type': 'send_notification',
-                    'message': f'{user.nombre_completo} ha marcado {event_type}.',
-                    'notification_type': 'attendance_update'
-                }
-            )
-        except Exception as e:
-            print(f"Error enviando notificación socket: {e}")
+        # La notificación por WebSockets ahora se maneja automáticamente vía signals.py
+        # (al guardar 'asistencia' y 'historial' se disparan los eventos correspondientes)
 
         return Response({
             'asistencia_id': asistencia.id,

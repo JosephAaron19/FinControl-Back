@@ -1,5 +1,6 @@
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
 
 class NotificationConsumer(AsyncWebsocketConsumer):
     async def label(self):
@@ -14,28 +15,37 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             self.channel_name
         )
         
-        # Si el usuario está autenticado, unirse a un grupo específico de su sede
-        if self.user.is_authenticated and self.user.sede:
-            self.sede_group = f"sede_{self.user.sede.id}"
-            await self.channel_layer.group_add(
-                self.sede_group,
-                self.channel_name
-            )
+        # Si el usuario está autenticado, unirse a los grupos de sus sedes
+        if self.user.is_authenticated:
+            self.groups_joined = ["system_notifications"]
+            
+            # 1. Sede principal del perfil
+            if self.user.sede:
+                sede_group = f"sede_{self.user.sede.id}"
+                await self.channel_layer.group_add(sede_group, self.channel_name)
+                self.groups_joined.append(sede_group)
+            
+            # 2. Sedes adicionales asignadas (para Gerentes/Supervisores)
+            from .models import UsuarioSede
+            additional_sedes = await database_sync_to_async(
+                lambda: list(UsuarioSede.objects.filter(usuario=self.user).values_list('sede_id', flat=True))
+            )()
+            
+            for sede_id in additional_sedes:
+                sede_group = f"sede_{sede_id}"
+                if sede_group not in self.groups_joined:
+                    await self.channel_layer.group_add(sede_group, self.channel_name)
+                    self.groups_joined.append(sede_group)
 
         await self.accept()
 
     async def disconnect(self, close_code):
-        # Salir de los grupos
-        await self.channel_layer.group_discard(
-            "system_notifications",
-            self.channel_name
-        )
-        
-        if hasattr(self, 'sede_group'):
-            await self.channel_layer.group_discard(
-                self.sede_group,
-                self.channel_name
-            )
+        # Salir de todos los grupos a los que se unió
+        if hasattr(self, 'groups_joined'):
+            for group in self.groups_joined:
+                await self.channel_layer.group_discard(group, self.channel_name)
+        else:
+            await self.channel_layer.group_discard("system_notifications", self.channel_name)
 
     # Método para recibir mensajes del grupo
     async def send_notification(self, event):

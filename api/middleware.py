@@ -17,9 +17,10 @@ class JWTAuthMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        from urllib.parse import parse_qs
         query_string = scope.get('query_string', b'').decode()
-        query_params = dict(qp.split('=') for qp in query_string.split('&') if '=' in qp)
-        token_key = query_params.get('token')
+        query_params = parse_qs(query_string)
+        token_key = query_params.get('token', [None])[0]
 
         if token_key:
             scope['user'] = await get_user(token_key)

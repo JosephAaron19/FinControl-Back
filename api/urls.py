@@ -26,8 +26,8 @@ urlpatterns = [
     path('attendance/event/', AttendanceEventView.as_view(), name='attendance_event'),
     path('attendance/history/', AttendanceHistoryView.as_view(), name='attendance_history'),
     path('jornada/estado-marcacion/', JornadaEstadoMarcacionView.as_view(), name='estado_marcacion'),
-    path('jornadas/historial/', HistorialJornadaListView.as_view(), name='historial_jornadas'),
-    path('jornadas/historial/<int:pk>/', HistorialJornadaDetalleView.as_view(), name='historial_jornada_detalle'),
+    path('historial-jornadas/', HistorialJornadaListView.as_view(), name='historial_jornadas'),
+    path('historial-jornadas/<int:pk>/detalle/', HistorialJornadaDetalleView.as_view(), name='historial_jornada_detalle'),
     
     # Incidents
     path('incidents/create/', IncidentCreateView.as_view(), name='incident_create'),

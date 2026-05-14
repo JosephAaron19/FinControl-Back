@@ -9,13 +9,13 @@ from django.utils import timezone
 from zoneinfo import ZoneInfo
 from django.db import transaction, models
 from django.db.models import Q
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede, HistorialJornada
 from .serializers import (
     SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
     IncidenciaSerializer, CustomTokenObtainPairSerializer,
     ConfiguracionTrackingSerializer, UbicacionPuntoSerializer,
     RolSerializer, TipoIncidenciaSerializer, JornadaConfiguracionSerializer,
-    HistorialJornadaSerializer
+    HistorialJornadaSerializer, HistorialJornadaListSerializer, HistorialJornadaDetailSerializer
 )
 import math
 
@@ -603,8 +603,15 @@ class SyncStatusView(APIView):
         asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
         asistencia_ts = asistencia.actualizado_at if asistencia else None
         
+        # 4. Timestamp de la configuración de jornada de su sede
+        from .models import JornadaConfiguracion
+        dias_map = {0: 'lunes', 1: 'martes', 2: 'miercoles', 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'}
+        day_name = dias_map[timezone.now().weekday()]
+        j_config = JornadaConfiguracion.objects.filter(sede=user.sede, dia_semana=day_name).first()
+        jornada_ts = j_config.actualizado_at if j_config else None
+        
         # Encontramos el máximo de los timestamps válidos
-        timestamps = [ts for ts in [user_ts, config_ts, asistencia_ts] if ts is not None]
+        timestamps = [ts for ts in [user_ts, config_ts, asistencia_ts, jornada_ts] if ts is not None]
         max_ts = max(timestamps) if timestamps else timezone.now()
         
         has_changes = False
@@ -987,139 +994,84 @@ class JornadaConfiguracionViewSet(viewsets.ModelViewSet):
             
         return JornadaConfiguracion.objects.none()
 
-    def perform_create(self, serializer):
-        config = serializer.save(creado_por=self.request.user)
-        self.notify_config_change(config)
-
-    def perform_update(self, serializer):
-        config = serializer.save(actualizado_por=self.request.user)
-        self.notify_config_change(config)
-
-    def notify_config_change(self, config):
-        from asgiref.sync import async_to_sync
-        from channels.layers import get_channel_layer
-        channel_layer = get_channel_layer()
-        
-        # Notificar a los usuarios de la sede
-        group_name = f"sede_{config.sede.id}"
-        async_to_sync(channel_layer.group_send)(
-            group_name,
-            {
-                'type': 'send_notification',
-                'message': f'Se ha actualizado la configuración de jornada.',
-                'notification_type': 'config_update'
-            }
-        )
-
 class HistorialJornadaListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
-    serializer_class = HistorialJornadaSerializer
+    serializer_class = HistorialJornadaListSerializer
 
     def get_queryset(self):
         user = self.request.user
         rol_nombre = user.rol.nombre.lower() if user.rol else ''
         
-        # El historial solo debe mostrar registros de operadores
-        queryset = HistorialJornada.objects.filter(usuario__rol__nombre__icontains='operador').order_by('-fecha', '-hora_entrada')
+        # Anotar conteos de incidencias y puntos GPS vinculados a la asistencia
+        queryset = HistorialJornada.objects.select_related('usuario', 'asistencia').annotate(
+            total_incidencias=models.Count('asistencia__incidencias_detalle', distinct=True),
+            total_puntos_gps=models.Count('asistencia__puntos_gps', distinct=True)
+        ).order_by('-fecha', '-hora_entrada')
         
-        # Filtros opcionales
-        usuario_id = self.request.query_params.get('usuario')
+        # Filtros por parámetros
+        usuario_id = self.request.query_params.get('usuario_id') or self.request.query_params.get('usuario')
         fecha_inicio = self.request.query_params.get('fecha_inicio')
         fecha_fin = self.request.query_params.get('fecha_fin')
-        
+        sede_id = self.request.query_params.get('sede_id')
+
         if usuario_id:
             queryset = queryset.filter(usuario_id=usuario_id)
         if fecha_inicio:
             queryset = queryset.filter(fecha__gte=fecha_inicio)
         if fecha_fin:
             queryset = queryset.filter(fecha__lte=fecha_fin)
+        if sede_id:
+            queryset = queryset.filter(usuario__sede_id=sede_id)
 
+        # Reglas de Visibilidad
         if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
             from .models import UsuarioSede
+            # Sedes asignadas + Usuarios creados por él
             sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
             if user.sede_id:
                 sedes_ids.append(user.sede_id)
-            return queryset.filter(usuario__sede_id__in=sedes_ids)
+            
+            return queryset.filter(
+                Q(usuario__sede_id__in=sedes_ids) | Q(usuario__creado_por=user)
+            )
+            
         elif 'operador' in rol_nombre:
+            # Solo su propio historial
             return queryset.filter(usuario=user)
             
         return queryset.filter(usuario=user)
 
-class HistorialJornadaDetalleView(APIView):
+class HistorialJornadaDetalleView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
+    serializer_class = HistorialJornadaDetailSerializer
+    queryset = HistorialJornada.objects.all()
 
-    def get(self, request, pk):
-        historial = HistorialJornada.objects.filter(id=pk).first()
-        if not historial:
-            return Response({'error': 'Registro no encontrado'}, status=status.HTTP_404_NOT_FOUND)
-            
-        # Validar permisos
-        current_user = request.user
-        rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
+    def get_object(self):
+        obj = super().get_object()
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
         
+        # Validar permisos
         can_view = False
         if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
             can_view = True
         elif 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
             from .models import UsuarioSede
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if current_user.sede_id:
-                sedes_ids.append(current_user.sede_id)
-            if historial.usuario.sede_id in sedes_ids:
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_ids.append(user.sede_id)
+            
+            if obj.usuario.sede_id in sedes_ids or obj.usuario.creado_por == user:
                 can_view = True
-        elif historial.usuario == current_user:
+        elif obj.usuario == user:
             can_view = True
             
         if not can_view:
-            return Response({'error': 'No tiene permisos para ver este registro'}, status=status.HTTP_403_FORBIDDEN)
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("No tiene permisos para ver este detalle.")
             
-        asistencia = historial.asistencia
-        eventos = AsistenciaEvento.objects.filter(asistencia=asistencia).order_by('fecha_hora')
-        incidencias = Incidencia.objects.filter(asistencia=asistencia).order_by('fecha_hora_reporte')
-        puntos_gps = UbicacionPunto.objects.filter(asistencia=asistencia).order_by('fecha_hora')
-        
-        data = {
-            'id': historial.id,
-            'fecha': historial.fecha,
-            'usuario': {
-                'id': historial.usuario.id,
-                'nombre_completo': historial.usuario.nombre_completo,
-                'dni': historial.usuario.dni,
-                'cargo': historial.usuario.cargo
-            },
-            'resumen': {
-                'hora_entrada': historial.hora_entrada,
-                'hora_salida': historial.hora_salida,
-                'total_horas': str(historial.total_horas_trabajadas) if historial.total_horas_trabajadas else "0:00:00",
-                'total_break': str(historial.total_tiempo_break) if historial.total_tiempo_break else "0:00:00",
-                'estado': historial.estado_jornada or 'Completada',
-                'cantidad_marcaciones': historial.cantidad_marcaciones
-            },
-            'eventos': [{
-                'id': e.id,
-                'tipo': e.tipo_evento,
-                'hora': e.fecha_hora,
-                'es_fuera_de_zona': e.es_fuera_de_zona,
-                'distancia': float(e.distancia_sede_metros) if e.distancia_sede_metros else 0
-            } for e in eventos],
-            'incidencias': [{
-                'id': inc.id,
-                'tipo': inc.tipo_incidencia_0.nombre if inc.tipo_incidencia_0 else inc.tipo_incidencia,
-                'descripcion': inc.descripcion,
-                'hora': inc.fecha_hora_reporte,
-                'estado': inc.estado_revision,
-                'foto': inc.foto_evidencia_url.url if inc.foto_evidencia_url else (inc.evidencia_url if inc.evidencia_url else None)
-            } for inc in incidencias],
-            'gps': [{
-                'lat': float(p.latitud),
-                'lng': float(p.longitud),
-                'hora': p.fecha_hora,
-                'fuera_de_zona': p.es_fuera_de_zona
-            } for p in puntos_gps]
-        }
-        
-        return Response(data)
+        return obj
 

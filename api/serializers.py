@@ -125,3 +125,52 @@ class HistorialJornadaSerializer(serializers.ModelSerializer):
             sede = Sede.objects.filter(id=obj.sede_id).first()
             return sede.nombre if sede else f"Sede {obj.sede_id}"
         return "-"
+
+class HistorialJornadaListSerializer(serializers.ModelSerializer):
+    operador = serializers.ReadOnlyField(source='usuario.nombre_completo')
+    sede = serializers.SerializerMethodField()
+    total_incidencias = serializers.IntegerField(read_only=True)
+    total_puntos_gps = serializers.IntegerField(read_only=True)
+    estado_puntualidad = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HistorialJornada
+        fields = [
+            'id', 'operador', 'sede', 'fecha', 'hora_entrada', 'hora_inicio_break', 
+            'hora_fin_break', 'hora_salida', 'total_tiempo_break', 'total_horas_trabajadas', 
+            'estado_puntualidad', 'estado_jornada', 'cerrado', 'cerrado_at', 
+            'total_incidencias', 'total_puntos_gps'
+        ]
+
+    def get_sede(self, obj):
+        if obj.sede_id:
+            sede = Sede.objects.filter(id=obj.sede_id).first()
+            return sede.nombre if sede else f"Sede {obj.sede_id}"
+        return "-"
+
+    def get_estado_puntualidad(self, obj):
+        if obj.asistencia:
+            return obj.asistencia.estado
+        return "-"
+
+class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
+    operador = serializers.ReadOnlyField(source='usuario.nombre_completo')
+    sede = serializers.SerializerMethodField()
+    eventos = AsistenciaEventoSerializer(source='asistencia.eventos', many=True, read_only=True)
+    incidencias = IncidenciaSerializer(source='asistencia.incidencias_detalle', many=True, read_only=True)
+    puntos_gps = UbicacionPuntoSerializer(source='asistencia.puntos_gps', many=True, read_only=True)
+
+    class Meta:
+        model = HistorialJornada
+        fields = [
+            'id', 'operador', 'sede', 'fecha', 'hora_entrada', 'hora_inicio_break', 
+            'hora_fin_break', 'hora_salida', 'total_tiempo_break', 'total_horas_trabajadas', 
+            'estado_jornada', 'cerrado', 'cerrado_at', 'observacion',
+            'eventos', 'incidencias', 'puntos_gps'
+        ]
+
+    def get_sede(self, obj):
+        if obj.sede_id:
+            sede = Sede.objects.filter(id=obj.sede_id).first()
+            return sede.nombre if sede else f"Sede {obj.sede_id}"
+        return "-"

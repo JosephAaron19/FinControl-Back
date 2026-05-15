@@ -1,6 +1,12 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion, HistorialJornada
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion, HistorialJornada, JornadaActividad
+
+class JornadaActividadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JornadaActividad
+        fields = '__all__'
+        read_only_fields = ('usuario', 'asistencia', 'historial_jornada', 'sede', 'hora_inicio_actividad', 'hora_fin_actividad', 'estado_actividad')
 
 class SedeSerializer(serializers.ModelSerializer):
     class Meta:
@@ -105,8 +111,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             from .models import Usuario
             try:
                 user = Usuario.objects.select_related('rol').get(dni=attrs['username'])
-                if not user.rol or user.rol.nombre.lower() != 'operador':
-                    raise serializers.ValidationError({"detail": "Acceso denegado. Solo los operadores pueden usar la app móvil."})
+                if not user.rol or user.rol.nombre.lower() not in ['operador', 'asesor']:
+                    raise serializers.ValidationError({"detail": "Acceso denegado. Solo los operadores y asesores pueden usar la app móvil."})
             except Usuario.DoesNotExist:
                 raise serializers.ValidationError({"detail": "Usuario no encontrado."})
                 
@@ -159,6 +165,9 @@ class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
     eventos = AsistenciaEventoSerializer(source='asistencia.eventos', many=True, read_only=True)
     incidencias = IncidenciaSerializer(source='asistencia.incidencias_detalle', many=True, read_only=True)
     puntos_gps = UbicacionPuntoSerializer(source='asistencia.puntos_gps', many=True, read_only=True)
+    actividades_campo = JornadaActividadSerializer(source='actividades_jornada', many=True, read_only=True)
+    rol_codigo = serializers.ReadOnlyField(source='usuario.rol.codigo')
+    rol_nombre = serializers.ReadOnlyField(source='usuario.rol.nombre')
 
     class Meta:
         model = HistorialJornada
@@ -166,7 +175,8 @@ class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
             'id', 'operador', 'sede', 'fecha', 'hora_entrada', 'hora_inicio_break', 
             'hora_fin_break', 'hora_salida', 'total_tiempo_break', 'total_horas_trabajadas', 
             'estado_jornada', 'cerrado', 'cerrado_at', 'observacion',
-            'eventos', 'incidencias', 'puntos_gps'
+            'eventos', 'incidencias', 'puntos_gps', 'actividades_campo',
+            'rol_codigo', 'rol_nombre'
         ]
 
     def get_sede(self, obj):

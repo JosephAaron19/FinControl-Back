@@ -293,3 +293,49 @@ class HistorialJornada(models.Model):
         db_table = 'historial_jornadas'
         verbose_name = 'Historial de Jornada'
         verbose_name_plural = 'Historial de Jornadas'
+
+class JornadaActividad(models.Model):
+    ESTADO_CHOICES = (
+        ('en_proceso', 'En Proceso'),
+        ('finalizada', 'Finalizada'),
+    )
+
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='actividades_jornada')
+    asistencia = models.ForeignKey(Asistencia, on_delete=models.CASCADE, related_name='actividades_jornada')
+    historial_jornada = models.ForeignKey(HistorialJornada, on_delete=models.CASCADE, related_name='actividades_jornada')
+    sede = models.ForeignKey(Sede, on_delete=models.CASCADE, related_name='actividades_jornada')
+    
+    titulo = models.CharField(max_length=150)
+    tipo_actividad = models.CharField(max_length=100)
+    descripcion = models.TextField(null=True, blank=True)
+    
+    cliente_nombre = models.CharField(max_length=150, null=True, blank=True)
+    cliente_documento = models.CharField(max_length=30, null=True, blank=True)
+    cliente_telefono = models.CharField(max_length=30, null=True, blank=True)
+    direccion_actividad = models.TextField(null=True, blank=True)
+    
+    latitud_inicio = models.DecimalField(max_digits=10, decimal_places=8)
+    longitud_inicio = models.DecimalField(max_digits=11, decimal_places=8)
+    evidencia_inicio_url = models.TextField(null=True, blank=True)
+    dispositivo_inicio = models.TextField(null=True, blank=True)
+    hora_inicio_actividad = models.DateTimeField(auto_now_add=True)
+    
+    latitud_fin = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)
+    longitud_fin = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
+    evidencia_fin_url = models.TextField(null=True, blank=True)
+    dispositivo_fin = models.TextField(null=True, blank=True)
+    hora_fin_actividad = models.DateTimeField(null=True, blank=True)
+    
+    resultado_actividad = models.CharField(max_length=100, null=True, blank=True)
+    observacion = models.TextField(null=True, blank=True)
+    
+    estado_actividad = models.CharField(max_length=50, choices=ESTADO_CHOICES, default='en_proceso')
+    
+    creado_at = models.DateTimeField(auto_now_add=True)
+    actualizado_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = 'jornada_actividades'
+        verbose_name = 'Actividad de Jornada'
+        verbose_name_plural = 'Actividades de Jornada'

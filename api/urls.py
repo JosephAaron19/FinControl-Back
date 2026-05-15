@@ -8,12 +8,13 @@ from .views import (
     RolListView, TipoIncidenciaListView, SedeListCreateView, SedeDetailView, UsuarioViewSet,
     IncidenciaListView, AsistenciaListView, ActividadHoyView, ActividadDetalleUsuarioView,
     JornadaEstadoMarcacionView, JornadaConfiguracionViewSet, HistorialJornadaListView,
-    HistorialJornadaDetalleView
+    HistorialJornadaDetalleView, JornadaActividadViewSet
 )
 
 router = DefaultRouter()
 router.register(r'usuarios', UsuarioViewSet, basename='usuario')
 router.register(r'jornada-configuracion', JornadaConfiguracionViewSet, basename='jornada-configuracion')
+router.register(r'jornada-actividades', JornadaActividadViewSet, basename='jornada-actividad')
 
 urlpatterns = [
     # Auth

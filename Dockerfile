@@ -32,5 +32,5 @@ USER djangouser
 # Exponer el puerto que usará Django/Gunicorn
 EXPOSE 8000
 
-# Ejecutar Gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "fincontrol_backend.wsgi:application"]
+# Ejecutar Daphne (soporta WebSockets/ASGI)
+CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "fincontrol_backend.asgi:application"]

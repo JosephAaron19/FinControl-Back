@@ -1,6 +1,6 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from .models import Asistencia, JornadaConfiguracion, HistorialJornada
+from .models import Asistencia, JornadaConfiguracion, HistorialJornada, JornadaActividad
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
@@ -54,4 +54,15 @@ def notify_config_update(sender, instance, created, **kwargs):
             group_name, 
             "Se ha actualizado la configuración de la jornada.", 
             "config_update"
+        )
+@receiver(post_save, sender=JornadaActividad)
+def notify_activity_update(sender, instance, created, **kwargs):
+    # Notificar a la sede cuando hay actividad de campo
+    if instance.usuario and instance.usuario.sede_id:
+        group_name = f"sede_{instance.usuario.sede_id}"
+        status = "iniciada" if instance.estado_actividad == 'en_proceso' else "finalizada"
+        send_ws_notification(
+            group_name, 
+            f"Actividad {status}: {instance.titulo} ({instance.usuario.nombre_completo})", 
+            "attendance_update"
         )

@@ -9,13 +9,14 @@ from django.utils import timezone
 from zoneinfo import ZoneInfo
 from django.db import transaction, models
 from django.db.models import Q
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede, HistorialJornada
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede, HistorialJornada, JornadaActividad
 from .serializers import (
     SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
     IncidenciaSerializer, CustomTokenObtainPairSerializer,
     ConfiguracionTrackingSerializer, UbicacionPuntoSerializer,
     RolSerializer, TipoIncidenciaSerializer, JornadaConfiguracionSerializer,
-    HistorialJornadaSerializer, HistorialJornadaListSerializer, HistorialJornadaDetailSerializer
+    HistorialJornadaSerializer, HistorialJornadaListSerializer, HistorialJornadaDetailSerializer,
+    JornadaActividadSerializer
 )
 import math
 
@@ -108,6 +109,11 @@ class AttendanceEventView(generics.CreateAPIView):
             if asistencia_hoy.hora_inicio_break and not asistencia_hoy.hora_fin_break:
                 return Response({'error': 'No puede marcar salida con un descanso activo. Finalice el descanso primero.'}, status=status.HTTP_400_BAD_REQUEST)
             
+            # Validar si el asesor tiene una actividad en proceso
+            if user.rol and user.rol.nombre.lower() == 'asesor':
+                if JornadaActividad.objects.filter(usuario=user, estado_actividad='en_proceso').exists():
+                    return Response({'error': 'Tienes una actividad en proceso. Finalízala antes de marcar salida.'}, status=status.HTTP_400_BAD_REQUEST)
+
             # Validar rango de salida si existe en la configuración
             if config.hora_inicio_salida:
                 if current_time < config.hora_inicio_salida:
@@ -418,9 +424,9 @@ class RolListView(generics.ListAPIView):
         
         queryset = Rol.objects.all()
         
-        # Gerentes solo pueden ver/asignar el rol de Operador
+        # Gerentes solo pueden ver/asignar el rol de Operador y Asesor
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            return queryset.filter(nombre__icontains='operador')
+            return queryset.filter(nombre__iregex=r'(operador|asesor)')
             
         return queryset
 
@@ -483,21 +489,21 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         
         queryset = Usuario.objects.all().order_by('-creado_at')
         
-        # Si se solicita explícitamente solo operadores (ej. desde el historial)
+        # Si se solicita explícitamente solo operadores o asesores
         if solo_operadores:
-            queryset = queryset.filter(rol__nombre__icontains='operador')
+            queryset = queryset.filter(rol__nombre__iregex=r'(operador|asesor)')
             
         if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Gerente ve usuarios ÚNICAMENTE de sus sedes asignadas y que sean OPERADORES
+            # Gerente ve usuarios ÚNICAMENTE de sus sedes asignadas y que sean OPERADORES o ASESORES
             sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
             if user.sede_id:
                 sedes_ids.append(user.sede_id)
             
-            return queryset.filter(sede_id__in=sedes_ids, rol__nombre__icontains='operador')
-        elif 'operador' in rol_nombre:
+            return queryset.filter(sede_id__in=sedes_ids, rol__nombre__iregex=r'(operador|asesor)')
+        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             return queryset.filter(id=user.id)
             
         return queryset.filter(id=user.id)
@@ -508,7 +514,27 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         return UsuarioSerializer
 
     def perform_create(self, serializer):
-        serializer.save(creado_por=self.request.user)
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            # Validar rol permitido
+            target_rol = Rol.objects.filter(id=self.request.data.get('rol')).first()
+            if not target_rol or target_rol.nombre.lower() not in ['operador', 'asesor']:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError({'rol': 'Solo puede crear usuarios con rol Operador o Asesor.'})
+            
+            # Validar sede permitida
+            target_sede_id = self.request.data.get('sede')
+            sedes_gestionables = list(UsuarioSede.objects.filter(usuario=user, puede_gestionar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_gestionables.append(user.sede_id)
+            
+            if target_sede_id and int(target_sede_id) not in sedes_gestionables:
+                from rest_framework.exceptions import ValidationError
+                raise ValidationError({'sede': 'No tiene permisos para asignar usuarios a esta sede.'})
+
+        serializer.save(creado_por=user, actualizado_por=user)
 
     @action(detail=True, methods=['post'], url_path='change-password')
     def change_password(self, request, pk=None):
@@ -540,7 +566,7 @@ class IncidenciaListView(generics.ListAPIView):
             if user.sede_id:
                 sedes_ids.append(user.sede_id)
             return queryset.filter(usuario__sede_id__in=sedes_ids)
-        elif 'operador' in rol_nombre:
+        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             return queryset.filter(usuario=user)
             
         return queryset.filter(usuario=user)
@@ -563,7 +589,7 @@ class AsistenciaListView(generics.ListAPIView):
             if user.sede_id:
                 sedes_ids.append(user.sede_id)
             return queryset.filter(usuario__sede_id__in=sedes_ids)
-        elif 'operador' in rol_nombre:
+        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             return queryset.filter(usuario=user)
             
         return queryset.filter(usuario=user)
@@ -741,11 +767,28 @@ class JornadaEstadoMarcacionView(APIView):
                         else:
                             mensaje = 'Fuera de rango para marcar salida.'
 
+        # Datos adicionales para Asesores
+        puede_iniciar_actividad = False
+        puede_finalizar_actividad = False
+        actividad_en_proceso = None
+        
+        if user.rol and user.rol.nombre.lower() == 'asesor':
+            if asistencia and asistencia.hora_entrada and not asistencia.hora_salida:
+                actividad = JornadaActividad.objects.filter(usuario=user, estado_actividad='en_proceso').first()
+                if actividad:
+                    puede_finalizar_actividad = True
+                    actividad_en_proceso = JornadaActividadSerializer(actividad).data
+                else:
+                    puede_iniciar_actividad = True
+
         response_data.update({
             'puede_marcar_entrada': puede_marcar_entrada,
             'puede_iniciar_descanso': puede_iniciar_descanso,
             'puede_finalizar_descanso': puede_finalizar_descanso,
             'puede_marcar_salida': puede_marcar_salida,
+            'puede_iniciar_actividad': puede_iniciar_actividad,
+            'puede_finalizar_actividad': puede_finalizar_actividad,
+            'actividad_en_proceso': actividad_en_proceso,
             'estado_jornada': estado_jornada,
             'mensaje': mensaje,
             'asistencia_estado': asistencia_estado
@@ -764,8 +807,8 @@ class ActividadHoyView(APIView):
         current_user = request.user
         rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
         
-        # Base query: solo operadores activos
-        usuarios = Usuario.objects.filter(activo=True, rol__nombre__icontains='operador').select_related('sede', 'rol')
+        # Base query: solo operativos activos (Operador y Asesor)
+        usuarios = Usuario.objects.filter(activo=True, rol__nombre__iregex=r'(operador|asesor)').select_related('sede', 'rol')
         
         # Aplicar restricciones por rol
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
@@ -794,6 +837,21 @@ class ActividadHoyView(APIView):
             puntos_gps = UbicacionPunto.objects.filter(usuario=user, fecha=today)
             puntos_count = puntos_gps.count()
             ultimo_punto = puntos_gps.order_by('-fecha_hora').first()
+            
+            # Actividades de campo (si es asesor)
+            actividades_campo = []
+            actividad_actual = None
+            total_actividades = 0
+            if user.rol and user.rol.nombre.lower() == 'asesor':
+                actividades_hoy = JornadaActividad.objects.filter(usuario=user, hora_inicio_actividad__date=today).order_by('hora_inicio_actividad')
+                total_actividades = actividades_hoy.count()
+                act_proceso = actividades_hoy.filter(estado_actividad='en_proceso').first()
+                if act_proceso:
+                    actividad_actual = act_proceso.titulo
+                elif total_actividades > 0:
+                    actividad_actual = 'Sin actividad activa'
+                else:
+                    actividad_actual = 'Sin actividades hoy'
             
             # Determinar estado
             estado = 'Sin Marcar'
@@ -848,7 +906,9 @@ class ActividadHoyView(APIView):
                     'latitud': ultimo_punto.latitud if ultimo_punto else None,
                     'longitud': ultimo_punto.longitud if ultimo_punto else None,
                     'distancia': ultimo_punto.distancia_sede_metros if ultimo_punto else None
-                } if ultimo_punto else None
+                } if ultimo_punto else None,
+                'total_actividades': total_actividades,
+                'actividad_actual': actividad_actual
             })
             
         return Response(data)
@@ -875,7 +935,7 @@ class ActividadDetalleUsuarioView(APIView):
                 
             if user.creado_por != current_user and user.sede_id not in sedes_ids:
                 return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
-        elif 'operador' in rol_nombre and current_user.id != user.id:
+        elif ('operador' in rol_nombre or 'asesor' in rol_nombre) and current_user.id != user.id:
             return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
             
         # Asistencia de hoy
@@ -955,7 +1015,8 @@ class ActividadDetalleUsuarioView(APIView):
                 'es_fuera_de_zona': ultimo_punto.es_fuera_de_zona if ultimo_punto else False
             },
             'puntos_gps': puntos_data,
-            'incidencias': incidencias_data
+            'incidencias': incidencias_data,
+            'actividades_campo': JornadaActividadSerializer(JornadaActividad.objects.filter(usuario=user, hora_inicio_actividad__date=today).order_by('hora_inicio_actividad'), many=True).data
         }
         
         return Response(data)
@@ -1025,7 +1086,7 @@ class HistorialJornadaListView(generics.ListAPIView):
                 Q(usuario__sede_id__in=sedes_ids) | Q(usuario__creado_por=user)
             )
             
-        elif 'operador' in rol_nombre:
+        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             # Solo su propio historial
             return queryset.filter(usuario=user)
             
@@ -1061,4 +1122,110 @@ class HistorialJornadaDetalleView(generics.RetrieveAPIView):
             raise PermissionDenied("No tiene permisos para ver este detalle.")
             
         return obj
+            
+class JornadaActividadViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = JornadaActividadSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        queryset = JornadaActividad.objects.all().order_by('-hora_inicio_actividad')
+        
+        # Filtros
+        historial_jornada_id = self.request.query_params.get('historial_jornada_id')
+        usuario_id = self.request.query_params.get('usuario_id')
+        fecha_inicio = self.request.query_params.get('fecha_inicio')
+        fecha_fin = self.request.query_params.get('fecha_fin')
+        estado_actividad = self.request.query_params.get('estado_actividad')
+        
+        if historial_jornada_id:
+            queryset = queryset.filter(historial_jornada_id=historial_jornada_id)
+        if usuario_id:
+            queryset = queryset.filter(usuario_id=usuario_id)
+        if fecha_inicio:
+            queryset = queryset.filter(hora_inicio_actividad__date__gte=fecha_inicio)
+        if fecha_fin:
+            queryset = queryset.filter(hora_inicio_actividad__date__lte=fecha_fin)
+        if estado_actividad:
+            queryset = queryset.filter(estado_actividad=estado_actividad)
+            
+        # Visibilidad
+        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+            return queryset
+            
+        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_ids.append(user.sede_id)
+            return queryset.filter(Q(usuario__creado_por=user) | Q(sede_id__in=sedes_ids))
+            
+        if 'asesor' in rol_nombre:
+            return queryset.filter(usuario=user)
+            
+        return queryset.none()
+
+    @action(detail=False, methods=['post'])
+    def iniciar(self, request):
+        user = request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        if rol_nombre != 'asesor':
+            return Response({'error': 'Solo los asesores pueden registrar actividades de campo.'}, status=status.HTTP_403_FORBIDDEN)
+            
+        today = timezone.now().date()
+        asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
+        
+        if not asistencia or not asistencia.hora_entrada:
+            return Response({'error': 'Debe marcar entrada antes de iniciar una actividad.'}, status=status.HTTP_400_BAD_REQUEST)
+        if asistencia.hora_salida:
+            return Response({'error': 'No puede iniciar una actividad si ya marcó salida.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # Validar si ya tiene una en proceso
+        actividad_pendiente = JornadaActividad.objects.filter(usuario=user, estado_actividad='en_proceso').exists()
+        if actividad_pendiente:
+            return Response({'error': 'Ya tiene una actividad en proceso. Finalícela antes de iniciar otra.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        historial = HistorialJornada.objects.filter(usuario=user, fecha=today).first()
+        if not historial:
+             return Response({'error': 'No se encontró el historial de jornada para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        serializer.save(
+            usuario=user,
+            asistencia=asistencia,
+            historial_jornada=historial,
+            sede=user.sede,
+            estado_actividad='en_proceso',
+            hora_inicio_actividad=timezone.now()
+        )
+        
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'])
+    def finalizar(self, request):
+        user = request.user
+        actividad_id = request.data.get('actividad_id')
+        
+        if not actividad_id:
+             return Response({'error': 'ID de actividad requerido.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        actividad = JornadaActividad.objects.filter(id=actividad_id, usuario=user, estado_actividad='en_proceso').first()
+        if not actividad:
+            return Response({'error': 'Actividad no encontrada o ya finalizada.'}, status=status.HTTP_404_NOT_FOUND)
+            
+        actividad.resultado_actividad = request.data.get('resultado_actividad')
+        actividad.observacion = request.data.get('observacion')
+        actividad.latitud_fin = request.data.get('latitud_fin')
+        actividad.longitud_fin = request.data.get('longitud_fin')
+        actividad.evidencia_fin_url = request.data.get('evidencia_fin_url')
+        actividad.dispositivo_fin = request.data.get('dispositivo_fin')
+        actividad.hora_fin_actividad = timezone.now()
+        actividad.estado_actividad = 'finalizada'
+        actividad.save()
+        
+        return Response(self.get_serializer(actividad).data, status=status.HTTP_200_OK)
 

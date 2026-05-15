@@ -487,9 +487,9 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         rol_nombre = user.rol.nombre.lower() if user.rol else ''
         solo_operadores = self.request.query_params.get('solo_operadores') == 'true'
         
-        queryset = Usuario.objects.all().order_by('-creado_at')
+        queryset = Usuario.objects.all().order_by('-creado_at').select_related('sede', 'rol')
         
-        # Si se solicita explícitamente solo operadores o asesores
+        # Si se solicita explícitamente solo personal operativo (ej. desde el historial)
         if solo_operadores:
             queryset = queryset.filter(rol__nombre__iregex=r'(operador|asesor)')
             
@@ -497,12 +497,12 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             return queryset
             
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Gerente ve usuarios ÚNICAMENTE de sus sedes asignadas y que sean OPERADORES o ASESORES
+            # Gerente ve usuarios de sus sedes asignadas o creados por él (cualquier rol para monitoreo)
             sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
             if user.sede_id:
                 sedes_ids.append(user.sede_id)
             
-            return queryset.filter(sede_id__in=sedes_ids, rol__nombre__iregex=r'(operador|asesor)')
+            return queryset.filter(Q(sede_id__in=sedes_ids) | Q(creado_por=user))
         elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             return queryset.filter(id=user.id)
             
@@ -803,29 +803,22 @@ class ActividadHoyView(APIView):
 
     def get(self, request):
         today = timezone.now().date()
-        
         current_user = request.user
         rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
         
-        # Base query: solo operativos activos (Operador y Asesor)
-        usuarios = Usuario.objects.filter(activo=True, rol__nombre__iregex=r'(operador|asesor)').select_related('sede', 'rol')
+        # Base query: todos los usuarios activos hoy
+        usuarios = Usuario.objects.filter(activo=True).select_related('sede', 'rol')
         
         # Aplicar restricciones por rol
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Gerente ve operadores de sus sedes asignadas o su sede principal
             sedes_ids = list(UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True))
             if current_user.sede_id:
                 sedes_ids.append(current_user.sede_id)
             usuarios = usuarios.filter(sede_id__in=sedes_ids)
-        elif 'operador' in rol_nombre:
-            # Operador solo se ve a sí mismo
+        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             usuarios = usuarios.filter(id=current_user.id)
-        else:
-            # Administradores y Superadmins ven todos los operadores activos
-            pass
         
         data = []
-        
         for user in usuarios:
             # Asistencia de hoy
             asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
@@ -839,11 +832,10 @@ class ActividadHoyView(APIView):
             ultimo_punto = puntos_gps.order_by('-fecha_hora').first()
             
             # Actividades de campo (si es asesor)
-            actividades_campo = []
             actividad_actual = None
             total_actividades = 0
             if user.rol and user.rol.nombre.lower() == 'asesor':
-                actividades_hoy = JornadaActividad.objects.filter(usuario=user, hora_inicio_actividad__date=today).order_by('hora_inicio_actividad')
+                actividades_hoy = JornadaActividad.objects.filter(usuario=user, hora_inicio_actividad__date=today)
                 total_actividades = actividades_hoy.count()
                 act_proceso = actividades_hoy.filter(estado_actividad='en_proceso').first()
                 if act_proceso:
@@ -855,8 +847,6 @@ class ActividadHoyView(APIView):
             
             # Determinar estado
             estado = 'Sin Marcar'
-            
-            # 1. Obtener configuración de jornada para este usuario hoy
             from .models import JornadaConfiguracion
             from zoneinfo import ZoneInfo
             dias_map = {0: 'lunes', 1: 'martes', 2: 'miercoles', 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'}
@@ -870,30 +860,21 @@ class ActividadHoyView(APIView):
                 elif asistencia.hora_inicio_break and not asistencia.hora_fin_break:
                     estado = 'En Break'
                 else:
-                    estado = 'Presente'
-                
-                # Sobrescribir con estados especiales si existen
-                if asistencia.estado:
-                    # Normalizar a Title Case para visualización
-                    estado = asistencia.estado.capitalize()
+                    estado = asistencia.estado.capitalize() if asistencia.estado else 'Presente'
             elif config and current_time > config.hora_fin_marcacion:
-                # Si no ha marcado y ya pasó el rango
                 estado = 'No marcó entrada'
                     
-            # Fuera de zona flag
             fuera_de_zona = False
             if ultimo_punto:
                 fuera_de_zona = ultimo_punto.es_fuera_de_zona
             elif asistencia and (asistencia.estado == 'Observado' or asistencia.estado == 'observado'):
                 fuera_de_zona = True
                 
-            data.append({
-                'id': user.id,
-                'dni': user.dni,
-                'nombre_completo': user.nombre_completo,
-                'sede': user.sede.nombre if user.sede else '-',
-                'cargo': user.cargo,
-                'rol': user.rol.nombre if user.rol else '-',
+            # Construir objeto base compatible con el frontend
+            user_serializer = UsuarioSerializer(user)
+            item_data = user_serializer.data
+            
+            item_data.update({
                 'estado': estado,
                 'hora_entrada': asistencia.hora_entrada if asistencia else None,
                 'hora_inicio_break': asistencia.hora_inicio_break if asistencia else None,
@@ -910,6 +891,7 @@ class ActividadHoyView(APIView):
                 'total_actividades': total_actividades,
                 'actividad_actual': actividad_actual
             })
+            data.append(item_data)
             
         return Response(data)
 

@@ -8,7 +8,7 @@ from .views import (
     RolListView, TipoIncidenciaListView, SedeListCreateView, SedeDetailView, UsuarioViewSet,
     IncidenciaListView, AsistenciaListView, ActividadHoyView, ActividadDetalleUsuarioView,
     JornadaEstadoMarcacionView, JornadaConfiguracionViewSet, HistorialJornadaListView,
-    HistorialJornadaDetalleView, JornadaActividadViewSet
+    HistorialJornadaDetalleView, JornadaActividadViewSet, JourneyTrackingMapView
 )
 
 router = DefaultRouter()
@@ -47,5 +47,6 @@ urlpatterns = [
     path('asistencias/', AsistenciaListView.as_view(), name='asistencia_list'),
     path('actividad/hoy/', ActividadHoyView.as_view(), name='actividad_hoy'),
     path('actividad/usuario/<int:pk>/', ActividadDetalleUsuarioView.as_view(), name='actividad_detalle_usuario'),
+    path('jornada/<int:asistencia_id>/mapa/', JourneyTrackingMapView.as_view(), name='jornada_mapa_externo'),
     path('', include(router.urls)),
 ]

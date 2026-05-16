@@ -20,6 +20,24 @@ from .serializers import (
 )
 import math
 
+# =============================================================================
+# REGLA DE ORO DE SEGURIDAD (IMPORTANTE):
+# Los Gerentes y Supervisores NUNCA deben ver datos de sedes que no tengan
+# asignadas. Esta regla se aplica a Usuarios, Asistencias, Incidencias,
+# Historiales y Configuración. NO ROMPER esta restricción en futuras vistas.
+# =============================================================================
+
+def get_authorized_sedes_ids(user):
+    """Retorna lista de IDs de sedes que el usuario tiene permiso de ver/gestionar."""
+    rol_nombre = user.rol.nombre.lower() if user.rol else ''
+    if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
+        return None # Admin ve todo
+        
+    sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+    if user.sede_id:
+        sedes_ids.append(user.sede_id)
+    return list(set(sedes_ids))
+
 def calculate_distance(lat1, lon1, lat2, lon2):
     try:
         # Haversine formula
@@ -107,7 +125,7 @@ class AttendanceEventView(generics.CreateAPIView):
             if asistencia_hoy.hora_salida:
                 return Response({'error': 'Ya marcó salida para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
             if asistencia_hoy.hora_inicio_break and not asistencia_hoy.hora_fin_break:
-                return Response({'error': 'No puede marcar salida con un descanso activo. Finalice el descanso primero.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Debe completar su descanso antes de marcar salida.'}, status=status.HTTP_400_BAD_REQUEST)
             
             # Validar si el asesor tiene una actividad en proceso
             if user.rol and user.rol.nombre.lower() == 'asesor':
@@ -118,20 +136,21 @@ class AttendanceEventView(generics.CreateAPIView):
             if config.hora_inicio_salida:
                 if current_time < config.hora_inicio_salida:
                     return Response({'error': f'Aún no puede marcar salida. El horario de salida inicia a las {config.hora_inicio_salida}.'}, status=status.HTTP_400_BAD_REQUEST)
-                if config.hora_fin_salida and current_time > config.hora_fin_salida:
-                    return Response({'error': f'El horario permitido para marcar salida ya finalizó ({config.hora_fin_salida}).'}, status=status.HTTP_400_BAD_REQUEST)
 
         asistencia, created = Asistencia.objects.get_or_create(usuario=user, fecha=today)
 
         from .models import HistorialJornada
         historial, h_created = HistorialJornada.objects.get_or_create(
-            asistencia=asistencia,
+            usuario=user,
+            fecha=today,
             defaults={
-                'usuario': user,
-                'fecha': today,
+                'asistencia': asistencia,
                 'sede_id': sede.id if sede else None
             }
         )
+        if not h_created and not historial.asistencia:
+            historial.asistencia = asistencia
+            historial.save()
 
         now = timezone.now()
         
@@ -153,7 +172,15 @@ class AttendanceEventView(generics.CreateAPIView):
             current_time = now_local.time()
             
             # Determinar estado de puntualidad
-            asistencia.estado = 'puntual' if current_time <= config.hora_fin_marcacion else 'tardanza'
+            if current_time < config.hora_inicio_marcacion:
+                asistencia.estado_puntualidad = 'temprano'
+            elif current_time <= config.hora_fin_marcacion:
+                asistencia.estado_puntualidad = 'puntual'
+            else:
+                asistencia.estado_puntualidad = 'tardanza'
+            
+            historial.estado_puntualidad = asistencia.estado_puntualidad
+            asistencia.estado = asistencia.estado_puntualidad
             
             # Verificar si tiene una incidencia aprobada para hoy que justifique la tardanza
             from .models import Incidencia
@@ -165,8 +192,15 @@ class AttendanceEventView(generics.CreateAPIView):
             
             if incidencia_aprobada:
                 asistencia.estado = 'justificado'
+                # Si está justificado, el estado de puntualidad sigue siendo tardanza?
+                # El usuario no pidió 'justificado' en estado_puntualidad, así que lo dejamos como tardanza
+                # pero el 'estado' general será 'justificado'.
             
             historial.estado_jornada = 'en_proceso'
+            
+            # Nuevo estado_asistencia
+            asistencia.estado_asistencia = 'en_proceso'
+            historial.estado_asistencia = 'en_proceso'
             
         elif event_type == 'SALIDA':
             asistencia.hora_salida = now
@@ -182,6 +216,28 @@ class AttendanceEventView(generics.CreateAPIView):
             historial.estado_jornada = 'cerrada'
             historial.cerrado = True
             historial.cerrado_at = now
+            
+            # Nuevo estado_asistencia
+            asistencia.estado_asistencia = 'completa'
+            historial.estado_asistencia = 'completa'
+
+            # Determinar estado de salida
+            from zoneinfo import ZoneInfo
+            now_local_exit = now.astimezone(ZoneInfo('America/Lima'))
+            time_exit = now_local_exit.time()
+
+            if config.hora_inicio_salida and time_exit < config.hora_inicio_salida:
+                 asistencia.estado_salida = 'temprano'
+            elif config.hora_fin_salida and time_exit > config.hora_fin_salida:
+                 asistencia.estado_salida = 'tardanza'
+            else:
+                 asistencia.estado_salida = 'puntual'
+            
+            historial.estado_salida = asistencia.estado_salida
+            
+            # Calcular horas trabajadas (Entrada -> Salida)
+            if historial.hora_entrada:
+                historial.total_horas_trabajadas = now - historial.hora_entrada
             
         elif event_type == 'INICIO_BREAK':
             asistencia.hora_inicio_break = now
@@ -211,6 +267,10 @@ class AttendanceEventView(generics.CreateAPIView):
             historial.distancia_fin_break_metros = distance
             historial.dispositivo_fin_break = device_info
             historial.estado_jornada = 'en_proceso'
+            
+            # Calcular tiempo de break
+            if historial.hora_inicio_break:
+                historial.total_tiempo_break = now - historial.hora_inicio_break
         else:
             return Response({'error': 'Tipo de evento inválido'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -384,7 +444,7 @@ class JourneyTrackingHistoryView(generics.ListAPIView):
         
         queryset = UbicacionPunto.objects.filter(asistencia_id=asistencia_id).order_by('fecha_hora')
         
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
             
         # Validar si puede ver la asistencia
@@ -395,11 +455,13 @@ class JourneyTrackingHistoryView(generics.ListAPIView):
         target_user = asistencia.usuario
         
         if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_asignadas = UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True)
+            sedes_asignadas = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
+            if user.sede_id:
+                sedes_asignadas.append(user.sede_id)
             if target_user.creado_por == user or target_user.sede_id in sedes_asignadas:
                 return queryset
             return UbicacionPunto.objects.none()
-        elif 'operador' in rol_nombre:
+        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             if target_user == user:
                 return queryset
             return UbicacionPunto.objects.none()
@@ -419,16 +481,8 @@ class RolListView(generics.ListAPIView):
     serializer_class = RolSerializer
 
     def get_queryset(self):
-        user = self.request.user
-        rol_nombre = user.rol.nombre.lower() if user.rol else ''
-        
-        queryset = Rol.objects.all()
-        
-        # Gerentes solo pueden ver/asignar el rol de Operador y Asesor
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            return queryset.filter(nombre__iregex=r'(operador|asesor)')
-            
-        return queryset
+        # Aseguramos que devuelva todos los roles para llenar los combos del front
+        return Rol.objects.all().order_by('id')
 
 class TipoIncidenciaListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
@@ -445,12 +499,14 @@ class SedeListCreateView(generics.ListCreateAPIView):
         
         queryset = Sede.objects.all()
         
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
             
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            return queryset
-        elif 'operador' in rol_nombre:
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            return queryset.filter(id__in=sedes_ids)
+            
+        if 'operador' in rol_nombre:
             if user.sede_id:
                 return queryset.filter(id=user.sede_id)
             return Sede.objects.none()
@@ -467,12 +523,14 @@ class SedeDetailView(generics.RetrieveUpdateDestroyAPIView):
         
         queryset = Sede.objects.all()
         
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'gerente', 'super administrador']):
             return queryset
             
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            return queryset
-        elif 'operador' in rol_nombre:
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            return queryset.filter(id__in=sedes_ids)
+            
+        if 'operador' in rol_nombre:
             if user.sede_id:
                 return queryset.filter(id=user.sede_id)
             return Sede.objects.none()
@@ -493,16 +551,16 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         if solo_operadores:
             queryset = queryset.filter(rol__nombre__iregex=r'(operador|asesor)')
             
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
             
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Gerente ve usuarios de sus sedes asignadas o creados por él (cualquier rol para monitoreo)
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if user.sede_id:
-                sedes_ids.append(user.sede_id)
-            
-            return queryset.filter(Q(sede_id__in=sedes_ids) | Q(creado_por=user))
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            # Filtrar solo operadores/asesores estrictamente de sus sedes
+            return queryset.filter(
+                rol__nombre__iregex=r'(operador|asesor)',
+                sede_id__in=sedes_ids
+            ).exclude(id=user.id)
         elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             return queryset.filter(id=user.id)
             
@@ -514,37 +572,46 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         return UsuarioSerializer
 
     def perform_create(self, serializer):
-        user = self.request.user
-        rol_nombre = user.rol.nombre.lower() if user.rol else ''
-        
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            # Validar rol permitido
-            target_rol = Rol.objects.filter(id=self.request.data.get('rol')).first()
-            if not target_rol or target_rol.nombre.lower() not in ['operador', 'asesor']:
-                from rest_framework.exceptions import ValidationError
-                raise ValidationError({'rol': 'Solo puede crear usuarios con rol Operador o Asesor.'})
+        try:
+            user = self.request.user
+            rol_nombre = user.rol.nombre.lower() if user.rol else ''
             
-            # Validar sede permitida
-            target_sede_id = self.request.data.get('sede')
-            sedes_gestionables = list(UsuarioSede.objects.filter(usuario=user, puede_gestionar=True).values_list('sede_id', flat=True))
-            if user.sede_id:
-                sedes_gestionables.append(user.sede_id)
-            
-            if target_sede_id and int(target_sede_id) not in sedes_gestionables:
-                from rest_framework.exceptions import ValidationError
-                raise ValidationError({'sede': 'No tiene permisos para asignar usuarios a esta sede.'})
+            if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+                # Validar rol permitido
+                target_rol_id = self.request.data.get('rol')
+                target_rol = Rol.objects.filter(id=target_rol_id).first()
+                if not target_rol or target_rol.nombre.lower() not in ['operador', 'asesor']:
+                    from rest_framework.exceptions import ValidationError
+                    raise ValidationError({'rol': 'Solo puede crear usuarios con rol Operador o Asesor.'})
+                
+                # Validar Sede: Solo puede asignar a su sede o sedes asignadas
+                target_sede_id = self.request.data.get('sede')
+                sedes_gestionables = get_authorized_sedes_ids(user)
+                    
+                try:
+                        # Validar si la sede está en sus gestionables
+                        if sedes_gestionables is not None and int(target_sede_id) not in sedes_gestionables:
+                            from rest_framework.exceptions import ValidationError
+                            raise ValidationError({'sede': 'No tiene permisos para asignar esta sede.'})
+                except (ValueError, TypeError):
+                    from rest_framework.exceptions import ValidationError
+                    raise ValidationError({'sede': 'Sede no válida.'})
 
-        serializer.save(creado_por=user, actualizado_por=user)
+            serializer.save(creado_por=user)
+        except Exception as e:
+            import traceback
+            print(traceback.format_exc())
+            raise e
 
     @action(detail=True, methods=['post'], url_path='change-password')
     def change_password(self, request, pk=None):
         usuario = self.get_object()
-        new_password = request.data.get('password')
+        new_password = self.request.data.get('password')
         if not new_password:
             return Response({'error': 'La contraseña es requerida.'}, status=status.HTTP_400_BAD_REQUEST)
         
         usuario.set_password(new_password)
-        usuario.debe_cambiar_password = request.data.get('debe_cambiar_password', True)
+        usuario.debe_cambiar_password = self.request.data.get('debe_cambiar_password', True)
         usuario.save()
         return Response({'status': 'Contraseña actualizada correctamente.'})
 
@@ -558,15 +625,14 @@ class IncidenciaListView(generics.ListAPIView):
         
         queryset = Incidencia.objects.all().order_by('-fecha_hora_reporte')
         
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
             
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if user.sede_id:
-                sedes_ids.append(user.sede_id)
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
             return queryset.filter(usuario__sede_id__in=sedes_ids)
-        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
+            
+        if 'operador' in rol_nombre or 'asesor' in rol_nombre:
             return queryset.filter(usuario=user)
             
         return queryset.filter(usuario=user)
@@ -581,15 +647,14 @@ class AsistenciaListView(generics.ListAPIView):
         
         queryset = Asistencia.objects.all().order_by('-fecha')
         
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
             
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if user.sede_id:
-                sedes_ids.append(user.sede_id)
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
             return queryset.filter(usuario__sede_id__in=sedes_ids)
-        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
+            
+        if 'operador' in rol_nombre or 'asesor' in rol_nombre:
             return queryset.filter(usuario=user)
             
         return queryset.filter(usuario=user)
@@ -742,30 +807,32 @@ class JornadaEstadoMarcacionView(APIView):
             else:
                 # Jornada en curso
                 estado_jornada = historial.estado_jornada if historial else 'en_proceso'
-                
+                # Lógica de descansos
                 if not asistencia.hora_inicio_break:
                     puede_iniciar_descanso = True
                     mensaje = 'Jornada en curso. Puede iniciar descanso.'
                 elif not asistencia.hora_fin_break:
                     puede_finalizar_descanso = True
                     mensaje = 'En descanso. Marque el fin del descanso para continuar.'
-                else:
-                    # Validar rango de salida si existe en la configuración
+
+                # Lógica de salida (OBLIGATORIO haber completado el descanso si se inició)
+                if not asistencia.hora_inicio_break or asistencia.hora_fin_break:
                     within_exit_range = True
                     if config.hora_inicio_salida:
                         within_exit_range = current_time >= config.hora_inicio_salida
-                        if config.hora_fin_salida:
-                            within_exit_range = within_exit_range and current_time <= config.hora_fin_salida
                     
                     if within_exit_range:
                         puede_marcar_salida = True
-                        mensaje = 'Descanso finalizado. Puede marcar su salida.'
+                        # Si ya pasó la hora de fin, mostramos mensaje especial pero permitimos marcar
+                        if config.hora_fin_salida and current_time > config.hora_fin_salida:
+                            mensaje = 'Horario de salida finalizado. Marque su salida ahora.'
+                        elif not puede_iniciar_descanso: # Si ya terminó el break o no hay break
+                             mensaje = 'Puede marcar su salida.'
                     else:
-                        puede_marcar_salida = False
-                        if config.hora_inicio_salida and current_time < config.hora_inicio_salida:
+                        # Si aún no es hora de salida y no estamos en break
+                        if not puede_iniciar_descanso and not puede_finalizar_descanso:
+                            puede_marcar_salida = False
                             mensaje = f'Aún no puede marcar salida. El horario de salida inicia a las {config.hora_inicio_salida}.'
-                        else:
-                            mensaje = 'Fuera de rango para marcar salida.'
 
         # Datos adicionales para Asesores
         puede_iniciar_actividad = False
@@ -791,14 +858,56 @@ class JornadaEstadoMarcacionView(APIView):
             'actividad_en_proceso': actividad_en_proceso,
             'estado_jornada': estado_jornada,
             'mensaje': mensaje,
-            'asistencia_estado': asistencia_estado
+            'asistencia_estado': asistencia_estado,
+            'estado_puntualidad': asistencia.estado_puntualidad if asistencia else 'pendiente'
         })
             
         return Response(response_data, status=status.HTTP_200_OK)
 
+from django.shortcuts import render, get_object_or_404
+import json
+
+class JourneyTrackingMapView(APIView):
+    """
+    Vista externa que renderiza un mapa con el tracking completo de una asistencia.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, asistencia_id):
+        asistencia = get_object_or_404(Asistencia, id=asistencia_id)
+        user = request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        # Validar permisos
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            if asistencia.usuario.sede_id not in sedes_ids:
+                return Response({'error': 'No autorizado para ver este recorrido'}, status=status.HTTP_403_FORBIDDEN)
+        elif asistencia.usuario != user:
+             return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
+
+        puntos = UbicacionPunto.objects.filter(asistencia=asistencia).order_by('fecha_hora')
+        
+        puntos_json = []
+        for p in puntos:
+            puntos_json.append({
+                'lat': float(p.latitud),
+                'lng': float(p.longitud),
+                'hora': p.fecha_hora.astimezone(ZoneInfo('America/Lima')).strftime('%H:%M:%S')
+            })
+
+        context = {
+            'asistencia': asistencia,
+            'usuario': asistencia.usuario,
+            'fecha': asistencia.fecha,
+            'puntos': puntos,
+            'puntos_json': json.dumps(puntos_json)
+        }
+        
+        return render(request, 'api/map_tracking.html', context)
+
 
 class ActividadHoyView(APIView):
-
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -806,91 +915,90 @@ class ActividadHoyView(APIView):
         current_user = request.user
         rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
         
-        # Base query: todos los usuarios activos hoy
-        usuarios = Usuario.objects.filter(activo=True).select_related('sede', 'rol')
+        # Sincronizar estados de jornada antes de consultar
+        from .utils import sync_daily_attendance, close_expired_journeys
+        sync_daily_attendance()
+        close_expired_journeys()
+        
+        # Base query: todos los usuarios activos hoy EXCLUYENDO al propio gerente
+        usuarios = Usuario.objects.filter(activo=True).exclude(id=current_user.id).select_related('sede', 'rol')
         
         # Aplicar restricciones por rol
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if current_user.sede_id:
-                sedes_ids.append(current_user.sede_id)
-            usuarios = usuarios.filter(sede_id__in=sedes_ids)
+        sedes_ids = get_authorized_sedes_ids(current_user)
+        if sedes_ids is not None:
+            # FILTRO ESTRICTO: Solo personal OPERATIVO (Operador/Asesor) estrictamente de sus sedes
+            usuarios = usuarios.filter(
+                rol__nombre__iregex=r'(operador|asesor)',
+                sede_id__in=sedes_ids
+            )
         elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             usuarios = usuarios.filter(id=current_user.id)
+        else:
+            # Para otros roles (admin), igual filtramos por personal operativo para este módulo
+            usuarios = usuarios.filter(rol__nombre__iregex=r'(operador|asesor)')
         
         data = []
+        # Optimizamos consultas: una sola pasada por los usuarios
         for user in usuarios:
-            # Asistencia de hoy
             asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
-            
-            # Incidencias de hoy
             incidencias_count = Incidencia.objects.filter(usuario=user, fecha_hora_reporte__date=today).count()
             
-            # Puntos GPS de hoy
+            # Puntos GPS del día
             puntos_gps = UbicacionPunto.objects.filter(usuario=user, fecha=today)
             puntos_count = puntos_gps.count()
             ultimo_punto = puntos_gps.order_by('-fecha_hora').first()
             
             # Actividades de campo (si es asesor)
-            actividad_actual = None
-            total_actividades = 0
-            if user.rol and user.rol.nombre.lower() == 'asesor':
-                actividades_hoy = JornadaActividad.objects.filter(usuario=user, hora_inicio_actividad__date=today)
-                total_actividades = actividades_hoy.count()
-                act_proceso = actividades_hoy.filter(estado_actividad='en_proceso').first()
-                if act_proceso:
-                    actividad_actual = act_proceso.titulo
-                elif total_actividades > 0:
-                    actividad_actual = 'Sin actividad activa'
-                else:
-                    actividad_actual = 'Sin actividades hoy'
+            actividades_hoy = JornadaActividad.objects.filter(usuario=user, hora_inicio_actividad__date=today)
+            total_actividades = actividades_hoy.count()
+            act_proceso = actividades_hoy.filter(estado_actividad='en_proceso').first()
+            actividad_actual = JornadaActividadSerializer(act_proceso).data if act_proceso else None
             
-            # Determinar estado
-            estado = 'Sin Marcar'
-            from .models import JornadaConfiguracion
-            from zoneinfo import ZoneInfo
-            dias_map = {0: 'lunes', 1: 'martes', 2: 'miercoles', 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'}
-            day_name = dias_map[timezone.now().weekday()]
-            config = JornadaConfiguracion.objects.filter(sede=user.sede, dia_semana=day_name, activo=True).first()
-            current_time = timezone.now().astimezone(ZoneInfo('America/Lima')).time()
-
+            # Determinar estado de asistencia para el Dashboard
+            estado_dashboard = 'Sin Marcar'
             if asistencia:
                 if asistencia.hora_salida:
-                    estado = 'Salida'
+                    estado_dashboard = 'Salida'
                 elif asistencia.hora_inicio_break and not asistencia.hora_fin_break:
-                    estado = 'En Break'
+                    estado_dashboard = 'En Break'
                 else:
-                    estado = asistencia.estado.capitalize() if asistencia.estado else 'Presente'
-            elif config and current_time > config.hora_fin_marcacion:
-                estado = 'No marcó entrada'
-                    
-            fuera_de_zona = False
-            if ultimo_punto:
-                fuera_de_zona = ultimo_punto.es_fuera_de_zona
-            elif asistencia and (asistencia.estado == 'Observado' or asistencia.estado == 'observado'):
-                fuera_de_zona = True
-                
-            # Construir objeto base compatible con el frontend
-            user_serializer = UsuarioSerializer(user)
-            item_data = user_serializer.data
-            
-            item_data.update({
-                'estado': estado,
-                'hora_entrada': asistencia.hora_entrada if asistencia else None,
-                'hora_inicio_break': asistencia.hora_inicio_break if asistencia else None,
-                'hora_fin_break': asistencia.hora_fin_break if asistencia else None,
-                'hora_salida': asistencia.hora_salida if asistencia else None,
+                    estado_dashboard = asistencia.estado.capitalize() if asistencia.estado else 'Presente'
+
+            # Estructura de datos 100% compatible con el Dashboard React anterior
+            item_data = {
+                'id': user.id,
+                'nombre_completo': user.nombre_completo,
+                'dni': user.dni,
+                'cargo': user.cargo,
+                'sede': user.sede.nombre if user.sede else '-',
+                'rol': user.rol.nombre if user.rol else '-',
+                'email': user.email,
+                'telefono': user.telefono,
+                'rol_info': RolSerializer(user.rol).data if user.rol else None,
+                'sede_info': SedeSerializer(user.sede).data if user.sede else None,
+                'asistencia': {
+                    'id': asistencia.id if asistencia else None,
+                    'hora_entrada': asistencia.hora_entrada if asistencia else None,
+                    'hora_inicio_break': asistencia.hora_inicio_break if asistencia else None,
+                    'hora_fin_break': asistencia.hora_fin_break if asistencia else None,
+                    'hora_salida': asistencia.hora_salida if asistencia else None,
+                    'estado_asistencia': asistencia.estado_asistencia if asistencia else 'programada',
+                    'estado_puntualidad': asistencia.estado_puntualidad if asistencia else 'pendiente',
+                    'estado_salida': asistencia.estado_salida if asistencia else 'pendiente',
+                    'estado': estado_dashboard,
+                } if asistencia else None,
                 'incidencias': incidencias_count,
                 'puntos_gps': puntos_count,
-                'fuera_de_zona': fuera_de_zona,
                 'ultima_ubicacion': {
                     'latitud': ultimo_punto.latitud if ultimo_punto else None,
                     'longitud': ultimo_punto.longitud if ultimo_punto else None,
+                    'fecha_hora': ultimo_punto.fecha_hora if ultimo_punto else None,
+                    'bateria': ultimo_punto.bateria_porcentaje if ultimo_punto else None,
                     'distancia': ultimo_punto.distancia_sede_metros if ultimo_punto else None
                 } if ultimo_punto else None,
                 'total_actividades': total_actividades,
                 'actividad_actual': actividad_actual
-            })
+            }
             data.append(item_data)
             
         return Response(data)
@@ -909,13 +1017,10 @@ class ActividadDetalleUsuarioView(APIView):
         current_user = request.user
         rol_nombre = current_user.rol.nombre.lower() if current_user.rol else ''
         
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+        sedes_ids = get_authorized_sedes_ids(current_user)
+        if sedes_ids is not None:
             # Validar si puede ver este usuario (sedes asignadas o su propia sede)
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=current_user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if current_user.sede_id:
-                sedes_ids.append(current_user.sede_id)
-                
-            if user.creado_por != current_user and user.sede_id not in sedes_ids:
+            if user.sede_id not in sedes_ids:
                 return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
         elif ('operador' in rol_nombre or 'asesor' in rol_nombre) and current_user.id != user.id:
             return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
@@ -979,7 +1084,9 @@ class ActividadDetalleUsuarioView(APIView):
                 'dni': user.dni,
                 'nombre_completo': user.nombre_completo,
                 'sede': user.sede.nombre if user.sede else '-',
-                'cargo': user.cargo
+                'cargo': user.cargo,
+                'rol_codigo': user.rol.codigo if user.rol else None,
+                'rol_nombre': user.rol.nombre if user.rol else None
             },
             'asistencia': {
                 'hora_entrada': asistencia.hora_entrada if asistencia else None,
@@ -1013,14 +1120,13 @@ class JornadaConfiguracionViewSet(viewsets.ModelViewSet):
         
         from .models import JornadaConfiguracion, UsuarioSede
         
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return JornadaConfiguracion.objects.all()
             
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if user.sede_id:
-                sedes_ids.append(user.sede_id)
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
             return JornadaConfiguracion.objects.filter(sede_id__in=sedes_ids)
+        return JornadaConfiguracion.objects.all()
             
         return JornadaConfiguracion.objects.none()
 
@@ -1031,6 +1137,11 @@ class HistorialJornadaListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        
+        # Sincronizar estados antes de listar
+        from .utils import sync_daily_attendance, close_expired_journeys
+        sync_daily_attendance()
+        close_expired_journeys()
         
         # Anotar conteos de incidencias y puntos GPS vinculados a la asistencia
         queryset = HistorialJornada.objects.select_related('usuario', 'asistencia').annotate(
@@ -1043,6 +1154,7 @@ class HistorialJornadaListView(generics.ListAPIView):
         fecha_inicio = self.request.query_params.get('fecha_inicio')
         fecha_fin = self.request.query_params.get('fecha_fin')
         sede_id = self.request.query_params.get('sede_id')
+        estado_asistencia = self.request.query_params.get('estado_asistencia')
 
         if usuario_id:
             queryset = queryset.filter(usuario_id=usuario_id)
@@ -1052,27 +1164,27 @@ class HistorialJornadaListView(generics.ListAPIView):
             queryset = queryset.filter(fecha__lte=fecha_fin)
         if sede_id:
             queryset = queryset.filter(usuario__sede_id=sede_id)
+        if estado_asistencia:
+            queryset = queryset.filter(estado_asistencia=estado_asistencia)
 
         # Reglas de Visibilidad
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
             
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            from .models import UsuarioSede
-            # Sedes asignadas + Usuarios creados por él
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if user.sede_id:
-                sedes_ids.append(user.sede_id)
-            
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            # FILTRO ESTRICTO: Solo historial de personal OPERATIVO estrictamente de sus sedes
             return queryset.filter(
-                Q(usuario__sede_id__in=sedes_ids) | Q(usuario__creado_por=user)
-            )
+                usuario__rol__nombre__iregex=r'(operador|asesor)',
+                usuario__sede_id__in=sedes_ids
+            ).exclude(usuario=user)
             
         elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
             # Solo su propio historial
             return queryset.filter(usuario=user)
             
-        return queryset.filter(usuario=user)
+        # Admin ve todo, pero el usuario pidió que en estos módulos solo salgan operadores y asesores
+        return queryset.filter(usuario__rol__nombre__iregex=r'(operador|asesor)')
 
 class HistorialJornadaDetalleView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
@@ -1080,22 +1192,23 @@ class HistorialJornadaDetalleView(generics.RetrieveAPIView):
     queryset = HistorialJornada.objects.all()
 
     def get_object(self):
+        # Sincronizar estados antes de obtener el objeto
+        from .utils import sync_daily_attendance, close_expired_journeys
+        sync_daily_attendance()
+        close_expired_journeys()
+        
         obj = super().get_object()
         user = self.request.user
         rol_nombre = user.rol.nombre.lower() if user.rol else ''
         
         # Validar permisos
         can_view = False
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        sedes_ids = get_authorized_sedes_ids(user)
+        
+        if sedes_ids is None: # Admin
             can_view = True
-        elif 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            from .models import UsuarioSede
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if user.sede_id:
-                sedes_ids.append(user.sede_id)
-            
-            if obj.usuario.sede_id in sedes_ids or obj.usuario.creado_por == user:
-                can_view = True
+        elif obj.usuario.sede_id in sedes_ids:
+            can_view = True
         elif obj.usuario == user:
             can_view = True
             
@@ -1134,14 +1247,12 @@ class JornadaActividadViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(estado_actividad=estado_actividad)
             
         # Visibilidad
-        if 'admin' in rol_nombre or 'superadmin' in rol_nombre:
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
             
-        if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
-            sedes_ids = list(UsuarioSede.objects.filter(usuario=user, puede_visualizar=True).values_list('sede_id', flat=True))
-            if user.sede_id:
-                sedes_ids.append(user.sede_id)
-            return queryset.filter(Q(usuario__creado_por=user) | Q(sede_id__in=sedes_ids))
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            return queryset.filter(sede_id__in=sedes_ids)
             
         if 'asesor' in rol_nombre:
             return queryset.filter(usuario=user)

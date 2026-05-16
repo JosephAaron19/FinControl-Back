@@ -32,31 +32,68 @@ class TipoIncidenciaSerializer(serializers.ModelSerializer):
 class UsuarioSerializer(serializers.ModelSerializer):
     sede_info = SedeSerializer(source='sede', read_only=True)
     rol_info = RolSerializer(source='rol', read_only=True)
+    sedes_ids = serializers.SerializerMethodField()
     class Meta:
         model = Usuario
-        fields = ('id', 'dni', 'nombre_completo', 'cargo', 'telefono', 'email', 'sede', 'rol', 'sede_info', 'rol_info', 'is_active', 'activo', 'debe_cambiar_password', 'observacion')
+        fields = ('id', 'dni', 'nombre_completo', 'cargo', 'telefono', 'email', 'sede', 'rol', 'sede_info', 'rol_info', 'is_active', 'activo', 'debe_cambiar_password', 'observacion', 'sedes_ids')
+
+    def get_sedes_ids(self, obj):
+        return list(obj.sedes_asignadas.values_list('sede_id', flat=True))
 
 class UsuarioCreateUpdateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
 
+    sedes_ids = serializers.ListField(child=serializers.IntegerField(), required=False, write_only=True)
+
     class Meta:
         model = Usuario
-        fields = ('dni', 'nombre_completo', 'password', 'cargo', 'telefono', 'email', 'sede', 'rol', 'activo', 'is_active', 'debe_cambiar_password', 'observacion')
+        fields = ('dni', 'nombre_completo', 'password', 'cargo', 'telefono', 'email', 'sede', 'rol', 'activo', 'is_active', 'debe_cambiar_password', 'observacion', 'sedes_ids')
 
     def create(self, validated_data):
         password = validated_data.pop('password', None)
+        sedes_ids = validated_data.pop('sedes_ids', [])
         user = super().create(validated_data)
         if password:
             user.set_password(password)
             user.save()
+            
+        # Sincronizar sedes
+        if sedes_ids:
+            from .models import UsuarioSede
+            # Limpiar por si acaso (aunque en create no debería haber)
+            UsuarioSede.objects.filter(usuario=user).delete()
+            for s_id in sedes_ids:
+                UsuarioSede.objects.create(
+                    usuario=user, 
+                    sede_id=s_id, 
+                    puede_gestionar=True, 
+                    puede_visualizar=True,
+                    es_principal=(s_id == user.sede_id),
+                    activo=True
+                )
         return user
 
     def update(self, instance, validated_data):
         password = validated_data.pop('password', None)
+        sedes_ids = validated_data.pop('sedes_ids', None)
         user = super().update(instance, validated_data)
         if password:
             user.set_password(password)
             user.save()
+            
+        # Sincronizar sedes si se enviaron
+        if sedes_ids is not None:
+            from .models import UsuarioSede
+            UsuarioSede.objects.filter(usuario=user).delete()
+            for s_id in sedes_ids:
+                UsuarioSede.objects.create(
+                    usuario=user, 
+                    sede_id=s_id, 
+                    puede_gestionar=True, 
+                    puede_visualizar=True,
+                    es_principal=(s_id == user.sede_id),
+                    activo=True
+                )
         return user
 
 class AsistenciaSerializer(serializers.ModelSerializer):
@@ -105,6 +142,10 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         
         data = super().validate(attrs)
         
+        # Agregar información extra al token
+        data['user_role'] = self.user.rol.codigo if self.user.rol else ''
+        data['user_name'] = self.user.nombre_completo
+        
         # Validar el rol si el origen es 'movil'
         if origen == 'movil':
             # Inner join con roles
@@ -137,28 +178,22 @@ class HistorialJornadaListSerializer(serializers.ModelSerializer):
     sede = serializers.SerializerMethodField()
     total_incidencias = serializers.IntegerField(read_only=True)
     total_puntos_gps = serializers.IntegerField(read_only=True)
-    estado_puntualidad = serializers.SerializerMethodField()
 
     class Meta:
         model = HistorialJornada
         fields = [
             'id', 'operador', 'sede', 'fecha', 'hora_entrada', 'hora_inicio_break', 
             'hora_fin_break', 'hora_salida', 'total_tiempo_break', 'total_horas_trabajadas', 
-            'estado_puntualidad', 'estado_jornada', 'cerrado', 'cerrado_at', 
-            'total_incidencias', 'total_puntos_gps'
+            'estado_puntualidad', 'estado_salida', 'estado_jornada', 'cerrado', 'cerrado_at', 
+            'total_incidencias', 'total_puntos_gps', 'estado_asistencia'
         ]
 
     def get_sede(self, obj):
         if obj.sede_id:
+            from .models import Sede
             sede = Sede.objects.filter(id=obj.sede_id).first()
             return sede.nombre if sede else f"Sede {obj.sede_id}"
         return "-"
-
-    def get_estado_puntualidad(self, obj):
-        if obj.asistencia:
-            return obj.asistencia.estado
-        return "-"
-
 class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
     operador = serializers.ReadOnlyField(source='usuario.nombre_completo')
     sede = serializers.SerializerMethodField()
@@ -176,7 +211,7 @@ class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
             'hora_fin_break', 'hora_salida', 'total_tiempo_break', 'total_horas_trabajadas', 
             'estado_jornada', 'cerrado', 'cerrado_at', 'observacion',
             'eventos', 'incidencias', 'puntos_gps', 'actividades_campo',
-            'rol_codigo', 'rol_nombre'
+            'rol_codigo', 'rol_nombre', 'estado_asistencia', 'estado_puntualidad', 'estado_salida'
         ]
 
     def get_sede(self, obj):

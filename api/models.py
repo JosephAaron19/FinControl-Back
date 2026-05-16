@@ -129,7 +129,9 @@ class UsuarioSede(models.Model):
     usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='sedes_asignadas')
     sede = models.ForeignKey(Sede, on_delete=models.CASCADE, related_name='usuarios_asignados')
     puede_visualizar = models.BooleanField(default=True)
-    puede_gestionar = models.BooleanField(default=False)
+    puede_gestionar = models.BooleanField(default=True)
+    es_principal = models.BooleanField(default=False)
+    activo = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'usuario_sedes'
@@ -151,6 +153,9 @@ class Asistencia(models.Model):
     estado = models.CharField(max_length=50, default='Sin Marcar')
     dispositivo_info = models.TextField(null=True, blank=True)
     observacion = models.TextField(null=True, blank=True)
+    estado_asistencia = models.CharField(max_length=20, default='programada') # 'programada', 'en_proceso', 'completa', 'incompleta', 'ausente'
+    estado_puntualidad = models.CharField(max_length=20, default='pendiente') # 'temprano', 'puntual', 'tardanza', 'no_marco_entrada', 'pendiente'
+    estado_salida = models.CharField(max_length=20, default='pendiente') # 'puntual', 'tardanza', 'no_marco_salida', 'pendiente'
     creado_at = models.DateTimeField(auto_now_add=True)
     actualizado_at = models.DateTimeField(auto_now=True)
 
@@ -249,6 +254,7 @@ class UbicacionPunto(models.Model):
         db_table = 'ubicacion_puntos'
         verbose_name = 'Punto de Ubicación'
         verbose_name_plural = 'Puntos de Ubicación'
+        ordering = ['fecha_hora']
 
 class HistorialJornada(models.Model):
     asistencia = models.ForeignKey(Asistencia, on_delete=models.CASCADE, related_name='historiales', null=True, blank=True)
@@ -286,11 +292,15 @@ class HistorialJornada(models.Model):
     observacion = models.TextField(null=True, blank=True)
     cerrado = models.BooleanField(default=False)
     cerrado_at = models.DateTimeField(null=True, blank=True)
+    estado_asistencia = models.CharField(max_length=20, default='programada')
+    estado_puntualidad = models.CharField(max_length=20, default='pendiente')
+    estado_salida = models.CharField(max_length=20, default='pendiente')
     creado_at = models.DateTimeField(auto_now_add=True)
     actualizado_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'historial_jornadas'
+        unique_together = ('usuario', 'fecha')
         verbose_name = 'Historial de Jornada'
         verbose_name_plural = 'Historial de Jornadas'
 

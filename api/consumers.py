@@ -19,23 +19,25 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         if self.user.is_authenticated:
             self.groups_joined = ["system_notifications"]
             
-            # 1. Sede principal del perfil
-            if self.user.sede:
-                sede_group = f"sede_{self.user.sede.id}"
+            # Obtener todas las sedes autorizadas (principal + adicionales) de forma asíncrona
+            from .models import UsuarioSede
+            
+            def get_authorized_sedes():
+                sedes_ids = []
+                # 1. Sede principal
+                if self.user.sede_id:
+                    sedes_ids.append(self.user.sede_id)
+                # 2. Sedes adicionales (UsuarioSede)
+                additional = list(UsuarioSede.objects.filter(usuario=self.user).values_list('sede_id', flat=True))
+                sedes_ids.extend(additional)
+                return list(set(sedes_ids)) # Eliminar duplicados
+                
+            all_sede_ids = await database_sync_to_async(get_authorized_sedes)()
+            
+            for sede_id in all_sede_ids:
+                sede_group = f"sede_{sede_id}"
                 await self.channel_layer.group_add(sede_group, self.channel_name)
                 self.groups_joined.append(sede_group)
-            
-            # 2. Sedes adicionales asignadas (para Gerentes/Supervisores)
-            from .models import UsuarioSede
-            additional_sedes = await database_sync_to_async(
-                lambda: list(UsuarioSede.objects.filter(usuario=self.user).values_list('sede_id', flat=True))
-            )()
-            
-            for sede_id in additional_sedes:
-                sede_group = f"sede_{sede_id}"
-                if sede_group not in self.groups_joined:
-                    await self.channel_layer.group_add(sede_group, self.channel_name)
-                    self.groups_joined.append(sede_group)
 
         await self.accept()
 

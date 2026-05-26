@@ -9,14 +9,15 @@ from django.utils import timezone
 from zoneinfo import ZoneInfo
 from django.db import transaction, models
 from django.db.models import Q
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede, HistorialJornada, JornadaActividad
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede, HistorialJornada, JornadaActividad, Horario, HorarioDetalle, UsuarioHorario, IntercambioHorario, JornadaConfiguracion
 from .serializers import (
     SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
     IncidenciaSerializer, CustomTokenObtainPairSerializer,
     ConfiguracionTrackingSerializer, UbicacionPuntoSerializer,
     RolSerializer, TipoIncidenciaSerializer, JornadaConfiguracionSerializer,
     HistorialJornadaSerializer, HistorialJornadaListSerializer, HistorialJornadaDetailSerializer,
-    JornadaActividadSerializer
+    JornadaActividadSerializer, HorarioSerializer, HorarioDetalleSerializer,
+    UsuarioHorarioSerializer, IntercambioHorarioSerializer
 )
 import math
 
@@ -37,6 +38,151 @@ def get_authorized_sedes_ids(user):
     if user.sede_id:
         sedes_ids.append(user.sede_id)
     return list(set(sedes_ids))
+
+
+def resolve_usuario_horario_para_fecha(usuario, fecha):
+    # 1. Buscar intercambios aprobados
+    intercambio = IntercambioHorario.objects.filter(
+        fecha_intercambio=fecha,
+        estado__iexact='aprobado',
+        activo=True
+    ).filter(Q(usuario_solicitante=usuario) | Q(usuario_reemplazo=usuario)).first()
+    
+    if intercambio:
+        if intercambio.usuario_solicitante == usuario:
+            horario = intercambio.horario_reemplazo_original
+        else:
+            horario = intercambio.horario_solicitante_original
+        if horario:
+            return horario, 'intercambio'
+            
+    # 2. Buscar horario asignado directamente
+    uh = UsuarioHorario.objects.filter(
+        usuario=usuario,
+        activo=True,
+        vigente_desde__lte=fecha
+    ).filter(Q(vigente_hasta__gte=fecha) | Q(vigente_hasta__isnull=True)).first()
+    
+    if uh and uh.horario:
+        return uh.horario, 'usuario'
+        
+    return None, 'sin_horario'
+
+
+def check_usuario_horario_overlap(usuario_id, horario_id, vigente_desde, vigente_hasta, exclude_uh_id=None):
+    from datetime import date
+    if isinstance(vigente_desde, str):
+        vigente_desde = date.fromisoformat(vigente_desde) if vigente_desde else date.today()
+    elif vigente_desde is None:
+        vigente_desde = date.today()
+        
+    if isinstance(vigente_hasta, str):
+        vigente_hasta = date.fromisoformat(vigente_hasta) if vigente_hasta else None
+
+    # Get the new Horario details
+    new_details = {
+        d.dia_semana.lower(): (d.hora_inicio_entrada, d.hora_fin_salida)
+        for d in HorarioDetalle.objects.filter(horario_id=horario_id, activo=True)
+    }
+    if not new_details:
+        return False
+
+    # Query all active assignments for this user
+    active_assignments = UsuarioHorario.objects.filter(usuario_id=usuario_id, activo=True)
+    if exclude_uh_id:
+        active_assignments = active_assignments.exclude(id=exclude_uh_id)
+
+    for uh in active_assignments:
+        # Check date range overlap
+        a_start = uh.vigente_desde
+        a_end = uh.vigente_hasta
+        
+        # Check if date ranges overlap:
+        overlap_dates = (vigente_desde <= a_end if a_end else True) and (a_start <= vigente_hasta if vigente_hasta else True)
+        if not overlap_dates:
+            continue
+            
+        # Get details of the existing horario
+        existing_details = {
+            d.dia_semana.lower(): (d.hora_inicio_entrada, d.hora_fin_salida)
+            for d in HorarioDetalle.objects.filter(horario=uh.horario, activo=True)
+        }
+        
+        # Check day and time overlap
+        for day, new_times in new_details.items():
+            if day in existing_details:
+                existing_times = existing_details[day]
+                t1_start, t1_end = new_times
+                t2_start, t2_end = existing_times
+                
+                # Check if times overlap using strict inequality for the touch point
+                if t1_start < t2_end and t2_start < t1_end:
+                    return True
+                    
+    return False
+
+
+def deactivate_dependent_relations(horario):
+    # 1. Deactivate details
+    HorarioDetalle.objects.filter(horario=horario).update(activo=False)
+    # 2. Deactivate user assignments
+    UsuarioHorario.objects.filter(horario=horario).update(activo=False, es_principal=False)
+    # 3. Deactivate interchanges that use this schedule
+    IntercambioHorario.objects.filter(
+        Q(horario_solicitante_original=horario) | Q(horario_reemplazo_original=horario)
+    ).update(activo=False)
+
+
+def get_active_horario_detalle(usuario, fecha):
+    dias_map = {
+        0: 'lunes',
+        1: 'martes',
+        2: 'miercoles',
+        3: 'jueves',
+        4: 'viernes',
+        5: 'sabado',
+        6: 'domingo'
+    }
+    day_str = dias_map[fecha.weekday()]
+    
+    horario, origen = resolve_usuario_horario_para_fecha(usuario, fecha)
+    if horario:
+        detalle = HorarioDetalle.objects.filter(horario=horario, dia_semana=day_str, activo=True).first()
+        if detalle:
+            return {
+                'tipo': 'detalle',
+                'origen': origen,
+                'hora_inicio_entrada': detalle.hora_inicio_entrada,
+                'hora_fin_entrada': detalle.hora_fin_entrada,
+                'hora_inicio_salida': detalle.hora_inicio_salida,
+                'hora_fin_salida': detalle.hora_fin_salida,
+                'horario_id': horario.id,
+                'nombre': horario.nombre
+            }
+        else:
+            return {
+                'tipo': 'sin_horario',
+                'origen': 'sin_horario',
+                'hora_inicio_entrada': None,
+                'hora_fin_entrada': None,
+                'hora_inicio_salida': None,
+                'hora_fin_salida': None,
+                'horario_id': None,
+                'nombre': None
+            }
+            
+    # If no direct schedule or exchange schedule covers today, return sin_horario
+    return {
+        'tipo': 'sin_horario',
+        'origen': 'sin_horario',
+        'hora_inicio_entrada': None,
+        'hora_fin_entrada': None,
+        'hora_inicio_salida': None,
+        'hora_fin_salida': None,
+        'horario_id': None,
+        'nombre': None
+    }
+
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     try:
@@ -84,23 +230,21 @@ class AttendanceEventView(generics.CreateAPIView):
         
         asistencia_hoy = Asistencia.objects.filter(usuario=user, fecha=today).first()
 
-        # Validaciones de Estado
-        from .models import JornadaConfiguracion
-        dias_map = {0: 'lunes', 1: 'martes', 2: 'miercoles', 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'}
-        day_name = dias_map[now_local.weekday()]
-        config = JornadaConfiguracion.objects.filter(sede=sede, dia_semana=day_name, activo=True).first()
+        # Validaciones de Estado (Horario flexible con prioridades)
+        horario_info = get_active_horario_detalle(user, today)
+        if horario_info['origen'] == 'sin_horario':
+            return Response({'error': 'No tienes horario asignado para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if not config:
-            return Response({'error': f'No hay una jornada configurada o activa para el día {day_name} en esta sede.'}, status=status.HTTP_400_BAD_REQUEST)
+        hora_inicio_entrada = horario_info['hora_inicio_entrada']
+        hora_fin_entrada = horario_info['hora_fin_entrada']
+        hora_inicio_salida = horario_info['hora_inicio_salida']
+        hora_fin_salida = horario_info['hora_fin_salida']
 
         current_time = now_local.time()
 
         if event_type == 'ENTRADA':
             if asistencia_hoy and asistencia_hoy.hora_entrada:
                 return Response({'error': 'Ya tiene una entrada registrada para hoy.'}, status=status.HTTP_400_BAD_REQUEST)
-            
-            if current_time < config.hora_inicio_marcacion:
-                return Response({'error': f'Aún no puede marcar entrada. El horario de marcación inicia a las {config.hora_inicio_marcacion}.'}, status=status.HTTP_400_BAD_REQUEST)
                 
         elif event_type == 'INICIO_BREAK':
             if not asistencia_hoy or not asistencia_hoy.hora_entrada:
@@ -132,10 +276,7 @@ class AttendanceEventView(generics.CreateAPIView):
                 if JornadaActividad.objects.filter(usuario=user, estado_actividad='en_proceso').exists():
                     return Response({'error': 'Tienes una actividad en proceso. Finalízala antes de marcar salida.'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Validar rango de salida si existe en la configuración
-            if config.hora_inicio_salida:
-                if current_time < config.hora_inicio_salida:
-                    return Response({'error': f'Aún no puede marcar salida. El horario de salida inicia a las {config.hora_inicio_salida}.'}, status=status.HTTP_400_BAD_REQUEST)
+
 
         asistencia, created = Asistencia.objects.get_or_create(usuario=user, fecha=today)
 
@@ -172,9 +313,7 @@ class AttendanceEventView(generics.CreateAPIView):
             current_time = now_local.time()
             
             # Determinar estado de puntualidad
-            if current_time < config.hora_inicio_marcacion:
-                asistencia.estado_puntualidad = 'temprano'
-            elif current_time <= config.hora_fin_marcacion:
+            if not hora_fin_entrada or current_time <= hora_fin_entrada:
                 asistencia.estado_puntualidad = 'puntual'
             else:
                 asistencia.estado_puntualidad = 'tardanza'
@@ -226,12 +365,16 @@ class AttendanceEventView(generics.CreateAPIView):
             now_local_exit = now.astimezone(ZoneInfo('America/Lima'))
             time_exit = now_local_exit.time()
 
-            if config.hora_inicio_salida and time_exit < config.hora_inicio_salida:
-                 asistencia.estado_salida = 'temprano'
-            elif config.hora_fin_salida and time_exit > config.hora_fin_salida:
-                 asistencia.estado_salida = 'tardanza'
+            is_outside_exit = False
+            if hora_inicio_salida and time_exit < hora_inicio_salida:
+                is_outside_exit = True
+            if hora_fin_salida and time_exit > hora_fin_salida:
+                is_outside_exit = True
+
+            if is_outside_exit:
+                 asistencia.estado_salida = 'fuera_rango'
             else:
-                 asistencia.estado_salida = 'puntual'
+                 asistencia.estado_salida = 'dentro_rango'
             
             historial.estado_salida = asistencia.estado_salida
             
@@ -394,6 +537,14 @@ class LocationPointCreateView(generics.CreateAPIView):
         if not asistencia or not asistencia.hora_entrada or asistencia.hora_salida:
             return Response({'error': 'No hay jornada activa para este usuario', 'detener_tracking': True}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Resolver historial_jornada_id si no viene o es nulo
+        if not historial_jornada_id:
+            historial = HistorialJornada.objects.filter(asistencia=asistencia).first()
+            if not historial:
+                historial = HistorialJornada.objects.filter(usuario=user, fecha=today).first()
+            if historial:
+                historial_jornada_id = historial.id
+
         lat = request.data.get('latitud')
         lon = request.data.get('longitud')
         
@@ -550,6 +701,10 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         # Si se solicita explícitamente solo personal operativo (ej. desde el historial)
         if solo_operadores:
             queryset = queryset.filter(rol__nombre__iregex=r'(operador|asesor)')
+            
+        sede_id = self.request.query_params.get('sede')
+        if sede_id:
+            queryset = queryset.filter(sede_id=sede_id)
             
         if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
@@ -738,31 +893,53 @@ class JornadaEstadoMarcacionView(APIView):
         }
         day_str = dias_map[now.weekday()]
         
-        # Importar modelo localmente
-        from .models import JornadaConfiguracion, HistorialJornada, Asistencia
+        # Importar modelos localmente
+        from .models import HistorialJornada, Asistencia, JornadaActividad
         
-        # 3. Buscar configuración activa para la sede y el día
-        config = JornadaConfiguracion.objects.filter(sede=sede, dia_semana=day_str, activo=True).first()
+        horario_info = get_active_horario_detalle(user, today)
         
         response_data = {
             'hora_servidor': now.strftime('%H:%M:%S'),
-            'dia_servidor': day_str
+            'dia_servidor': day_str,
+            'origen_horario': horario_info['origen'],
         }
         
-        if not config:
+        if horario_info['origen'] == 'sin_horario':
             response_data.update({
                 'puede_marcar_entrada': False,
-                'mensaje': f'No hay una jornada configurada o activa para el día {day_str} en esta sede.'
+                'puede_iniciar_descanso': False,
+                'puede_finalizar_descanso': False,
+                'puede_marcar_salida': False,
+                'puede_iniciar_break': False,
+                'puede_finalizar_break': False,
+                'puede_iniciar_actividad': False,
+                'puede_finalizar_actividad': False,
+                'actividad_en_proceso': None,
+                'estado_jornada': 'no_iniciada',
+                'mensaje': 'No tienes horario asignado para hoy',
+                'asistencia_estado': 'Sin Marcar',
+                'estado_puntualidad': 'pendiente',
+                'horario_actual': None
             })
             return Response(response_data, status=status.HTTP_200_OK)
             
+        hora_inicio_entrada = horario_info['hora_inicio_entrada']
+        hora_fin_entrada = horario_info['hora_fin_entrada']
+        hora_inicio_salida = horario_info['hora_inicio_salida']
+        hora_fin_salida = horario_info['hora_fin_salida']
+        
+        horario_actual = {
+            'nombre': horario_info['nombre'],
+            'hora_inicio_entrada': hora_inicio_entrada.strftime('%H:%M:%S') if hora_inicio_entrada else None,
+            'hora_fin_entrada': hora_fin_entrada.strftime('%H:%M:%S') if hora_fin_entrada else None,
+            'hora_inicio_salida': hora_inicio_salida.strftime('%H:%M:%S') if hora_inicio_salida else None,
+            'hora_fin_salida': hora_fin_salida.strftime('%H:%M:%S') if hora_fin_salida else None,
+        }
+        response_data['horario_actual'] = horario_actual
+        
         current_time = now.time()
         
-        # 4. Validar si la hora actual está en el rango
-        within_hours = config.hora_inicio_marcacion <= current_time <= config.hora_fin_marcacion
-        after_entrance_range = current_time > config.hora_fin_marcacion
-        
-        # 5. Validar si ya tiene asistencia o jornada creada
+        # Validar si ya tiene asistencia o jornada creada
         asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
         historial = HistorialJornada.objects.filter(usuario=user, fecha=today).first()
         
@@ -772,30 +949,26 @@ class JornadaEstadoMarcacionView(APIView):
         puede_marcar_salida = False
         estado_jornada = 'no_iniciada'
         
-        # Lógica de botones
-        asistencia_estado = 'no_marco_entrada' # Default si no hay asistencia y terminó el rango
+        asistencia_estado = 'no_marco_entrada' # Default
+        mensaje = ""
         
         if not asistencia or not asistencia.hora_entrada:
-            if current_time >= config.hora_inicio_marcacion:
-                puede_marcar_entrada = True
-                estado_jornada = 'no_iniciada'
-                
-                if within_hours:
-                    asistencia_estado = 'Sin Marcar'
-                    mensaje = 'Puede marcar entrada puntual.'
-                else:
-                    asistencia_estado = 'no_marco_entrada'
-                    mensaje = 'Rango de entrada finalizado. Puede marcar entrada (Tardanza).'
-            else:
-                # Antes del horario de inicio (ej. llega demasiado temprano)
-                puede_marcar_entrada = False
+            puede_marcar_entrada = True
+            estado_jornada = 'no_iniciada'
+            
+            if hora_inicio_entrada and current_time < hora_inicio_entrada:
                 asistencia_estado = 'Sin Marcar'
-                estado_jornada = 'no_iniciada'
-                mensaje = f'Fuera de horario. El horario de marcación inicia a las {config.hora_inicio_marcacion}.'
+                mensaje = 'Puede marcar entrada (Anticipado).'
+            elif hora_fin_entrada and current_time <= hora_fin_entrada:
+                asistencia_estado = 'Sin Marcar'
+                mensaje = 'Puede marcar entrada puntual.'
+            else:
+                asistencia_estado = 'no_marco_entrada'
+                mensaje = 'Rango de entrada finalizado. Puede marcar entrada (Tardanza).'
         else:
             asistencia_estado = asistencia.estado
         
-        # Si ya marcó entrada o ya está en flujo
+        # Si ya marcó entrada
         if asistencia:
             if asistencia.hora_salida or (historial and historial.cerrado):
                 puede_marcar_entrada = False
@@ -805,34 +978,35 @@ class JornadaEstadoMarcacionView(APIView):
                 estado_jornada = 'cerrada'
                 mensaje = 'Ya completó su jornada de hoy.'
             else:
-                # Jornada en curso
                 estado_jornada = historial.estado_jornada if historial else 'en_proceso'
-                # Lógica de descansos
+                
+                # BREAK LIBRE: Se permite iniciar y finalizar en cualquier momento
                 if not asistencia.hora_inicio_break:
                     puede_iniciar_descanso = True
                     mensaje = 'Jornada en curso. Puede iniciar descanso.'
                 elif not asistencia.hora_fin_break:
                     puede_finalizar_descanso = True
                     mensaje = 'En descanso. Marque el fin del descanso para continuar.'
+                else:
+                    mensaje = 'Descanso finalizado. Espere para marcar salida.'
 
-                # Lógica de salida (OBLIGATORIO haber completado el descanso si se inició)
+                # Salida (se requiere completar break si se inició)
                 if not asistencia.hora_inicio_break or asistencia.hora_fin_break:
-                    within_exit_range = True
-                    if config.hora_inicio_salida:
-                        within_exit_range = current_time >= config.hora_inicio_salida
+                    puede_marcar_salida = True
                     
-                    if within_exit_range:
-                        puede_marcar_salida = True
-                        # Si ya pasó la hora de fin, mostramos mensaje especial pero permitimos marcar
-                        if config.hora_fin_salida and current_time > config.hora_fin_salida:
-                            mensaje = 'Horario de salida finalizado. Marque su salida ahora.'
-                        elif not puede_iniciar_descanso: # Si ya terminó el break o no hay break
-                             mensaje = 'Puede marcar su salida.'
+                    is_outside_exit = False
+                    if hora_inicio_salida and current_time < hora_inicio_salida:
+                        is_outside_exit = True
+                    if hora_fin_salida and current_time > hora_fin_salida:
+                        is_outside_exit = True
+                        
+                    if is_outside_exit:
+                        if hora_inicio_salida and current_time < hora_inicio_salida:
+                            mensaje = 'Fuera de rango de salida. Puede marcar salida anticipada.'
+                        else:
+                            mensaje = 'Fuera de rango de salida. Puede marcar salida.'
                     else:
-                        # Si aún no es hora de salida y no estamos en break
-                        if not puede_iniciar_descanso and not puede_finalizar_descanso:
-                            puede_marcar_salida = False
-                            mensaje = f'Aún no puede marcar salida. El horario de salida inicia a las {config.hora_inicio_salida}.'
+                        mensaje = 'Puede marcar su salida.'
 
         # Datos adicionales para Asesores
         puede_iniciar_actividad = False
@@ -853,6 +1027,9 @@ class JornadaEstadoMarcacionView(APIView):
             'puede_iniciar_descanso': puede_iniciar_descanso,
             'puede_finalizar_descanso': puede_finalizar_descanso,
             'puede_marcar_salida': puede_marcar_salida,
+            # Mantener compatibilidad con ambas nomenclaturas
+            'puede_iniciar_break': puede_iniciar_descanso,
+            'puede_finalizar_break': puede_finalizar_descanso,
             'puede_iniciar_actividad': puede_iniciar_actividad,
             'puede_finalizar_actividad': puede_finalizar_actividad,
             'actividad_en_proceso': actividad_en_proceso,
@@ -905,6 +1082,123 @@ class JourneyTrackingMapView(APIView):
         }
         
         return render(request, 'api/map_tracking.html', context)
+
+
+class JourneyTrackingRecorridoJornadaView(APIView):
+    """
+    Endpoint para obtener el recorrido GPS detallado de una jornada por su ID de historial.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, historial_jornada_id):
+        # 1. Obtener el historial de jornada
+        historial = get_object_or_404(HistorialJornada, id=historial_jornada_id)
+        user = request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+
+        # 2. Control de seguridad según roles
+        can_view = False
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
+            can_view = True
+        elif 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            sedes_ids = get_authorized_sedes_ids(user)
+            if sedes_ids is None:
+                can_view = True
+            else:
+                if user.sede_id:
+                    sedes_ids.append(user.sede_id)
+                sedes_ids = list(set(sedes_ids))
+                # Creado por él o asignado a sus sedes
+                if (historial.usuario.creado_por == user or 
+                    (historial.usuario.sede_id and historial.usuario.sede_id in sedes_ids) or
+                    (historial.sede_id and historial.sede_id in sedes_ids)):
+                    can_view = True
+        elif 'operador' in rol_nombre or 'asesor' in rol_nombre:
+            if historial.usuario == user:
+                can_view = True
+
+        if not can_view:
+            return Response({'error': 'No tiene permisos para ver este recorrido.'}, status=status.HTTP_403_FORBIDDEN)
+
+        # 3. Obtener la sede (priorizar la de la jornada, luego la del usuario)
+        sede = None
+        if historial.sede_id:
+            sede = Sede.objects.filter(id=historial.sede_id).first()
+        if not sede and historial.usuario.sede:
+            sede = historial.usuario.sede
+
+        sede_data = {
+            'sede_id': sede.id if sede else None,
+            'nombre': sede.nombre if sede else None,
+            'latitud': float(sede.latitud) if sede and sede.latitud is not None else None,
+            'longitud': float(sede.longitud) if sede and sede.longitud is not None else None,
+            'radio_metros': sede.radio_metros if sede else None,
+        }
+
+        # 4. Obtener puntos GPS ordenados por fecha_hora
+        puntos = UbicacionPunto.objects.filter(
+            historial_jornada_id=historial.id,
+            latitud__isnull=False,
+            longitud__isnull=False
+        ).order_by('fecha_hora')
+
+        # Si no hay puntos por historial_jornada_id, intentar buscar por su asistencia asociada
+        if not puntos.exists() and historial.asistencia:
+            puntos = UbicacionPunto.objects.filter(
+                asistencia=historial.asistencia,
+                latitud__isnull=False,
+                longitud__isnull=False
+            ).order_by('fecha_hora')
+
+        puntos_data = []
+        total_fuera_de_zona = 0
+        
+        for p in puntos:
+            if p.es_fuera_de_zona:
+                total_fuera_de_zona += 1
+                
+            puntos_data.append({
+                'id': p.id,
+                'latitud': float(p.latitud),
+                'longitud': float(p.longitud),
+                'fecha_hora': p.fecha_hora.isoformat() if p.fecha_hora else None,
+                'precision_metros': float(p.precision_metros) if p.precision_metros is not None else None,
+                'bateria_porcentaje': p.bateria_porcentaje,
+                'es_fuera_de_zona': p.es_fuera_de_zona,
+                'distancia_sede_metros': float(p.distancia_sede_metros) if p.distancia_sede_metros is not None else None,
+                'origen': p.origen,
+                'estado_envio': p.estado_envio
+            })
+
+        # 5. Estructurar respuesta
+        response_data = {
+            'jornada': {
+                'historial_jornada_id': historial.id,
+                'fecha': historial.fecha.isoformat() if historial.fecha else None,
+                'hora_entrada': historial.hora_entrada.isoformat() if historial.hora_entrada else None,
+                'hora_salida': historial.hora_salida.isoformat() if historial.hora_salida else None,
+                'estado_jornada': historial.estado_jornada,
+                'estado_asistencia': historial.estado_asistencia
+            },
+            'usuario': {
+                'usuario_id': historial.usuario.id,
+                'nombre_completo': historial.usuario.nombre_completo,
+                'rol': historial.usuario.rol.nombre if historial.usuario.rol else None
+            },
+            'sede': sede_data,
+            'puntos': puntos_data,
+            'resumen': {
+                'total_puntos': len(puntos_data),
+                'primera_ubicacion': puntos_data[0] if puntos_data else None,
+                'ultima_ubicacion': puntos_data[-1] if puntos_data else None,
+                'total_fuera_de_zona': total_fuera_de_zona
+            }
+        }
+
+        if not puntos_data:
+            response_data['message'] = 'No se registraron puntos GPS para esta jornada.'
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 class ActividadHoyView(APIView):
@@ -1321,4 +1615,491 @@ class JornadaActividadViewSet(viewsets.ModelViewSet):
         actividad.save()
         
         return Response(self.get_serializer(actividad).data, status=status.HTTP_200_OK)
+
+
+class HorarioViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = HorarioSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        sedes_ids = get_authorized_sedes_ids(user)
+        queryset = Horario.objects.filter(activo=True)
+        if sedes_ids is not None:
+            queryset = queryset.filter(sede_id__in=sedes_ids)
+        sede_id = self.request.query_params.get('sede')
+        if sede_id:
+            queryset = queryset.filter(sede_id=sede_id)
+        return queryset
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy()
+        user = request.user
+        
+        modo = data.get('modo')
+        sede_id = data.get('sede_id')
+        nombre = data.get('nombre')
+        descripcion = data.get('descripcion')
+        dias = data.get('dias', [])
+        usuarios_ids = data.get('usuarios_ids', [])
+        
+        if not sede_id:
+            return Response({'error': 'La sede (sede_id) es obligatoria'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None and int(sede_id) not in sedes_ids:
+            return Response({'error': 'No tienes permisos en la sede seleccionada'}, status=status.HTTP_403_FORBIDDEN)
+            
+        # Mapear para el serializador
+        serializer_data = {
+            'sede': sede_id,
+            'nombre': nombre,
+            'descripcion': descripcion,
+            'tipo_configuracion': modo
+        }
+        
+        serializer = self.get_serializer(data=serializer_data)
+        serializer.is_valid(raise_exception=True)
+        horario = serializer.save(creado_por=user)
+        
+        # Guardar detalles (dias)
+        if modo == 'general_unico':
+            hora_inicio_entrada = data.get('hora_inicio_entrada')
+            hora_fin_entrada = data.get('hora_fin_entrada')
+            hora_inicio_salida = data.get('hora_inicio_salida')
+            hora_fin_salida = data.get('hora_fin_salida')
+            
+            if not all([hora_inicio_entrada, hora_fin_entrada, hora_inicio_salida, hora_fin_salida]):
+                return Response({'error': 'Faltan rangos de entrada/salida para el modo general_unico'}, status=status.HTTP_400_BAD_REQUEST)
+                
+            for dia in dias:
+                HorarioDetalle.objects.create(
+                    horario=horario,
+                    dia_semana=dia.lower(),
+                    hora_inicio_entrada=hora_inicio_entrada,
+                    hora_fin_entrada=hora_fin_entrada,
+                    hora_inicio_salida=hora_inicio_salida,
+                    hora_fin_salida=hora_fin_salida
+                )
+        elif modo == 'personalizado_por_dias':
+            for d in dias:
+                HorarioDetalle.objects.create(
+                    horario=horario,
+                    dia_semana=d['dia_semana'].lower(),
+                    hora_inicio_entrada=d['hora_inicio_entrada'],
+                    hora_fin_entrada=d['hora_fin_entrada'],
+                    hora_inicio_salida=d['hora_inicio_salida'],
+                    hora_fin_salida=d['hora_fin_salida']
+                )
+        else:
+            return Response({'error': 'Modo de configuración de horario inválido'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        # Asignar usuarios si se especifican
+        if usuarios_ids:
+            from datetime import date
+            vigente_desde = data.get('vigente_desde')
+            if not vigente_desde or vigente_desde == "":
+                vigente_desde = date.today().isoformat()
+            vigente_hasta = data.get('vigente_hasta')
+            if not vigente_hasta or vigente_hasta == "":
+                vigente_hasta = None
+            
+            # Validar cruces
+            for u_id in usuarios_ids:
+                if check_usuario_horario_overlap(u_id, horario.id, vigente_desde, vigente_hasta):
+                    transaction.set_rollback(True)
+                    return Response({'error': 'El usuario ya tiene un horario asignado que se cruza con este horario.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            for u_id in usuarios_ids:
+                try:
+                    target_user = Usuario.objects.get(id=u_id)
+                except Usuario.DoesNotExist:
+                    continue
+                
+                # Check user Sede authorized
+                if sedes_ids is not None and target_user.sede_id not in sedes_ids:
+                    continue
+                
+                # Crear asignación
+                UsuarioHorario.objects.create(
+                    usuario=target_user,
+                    horario=horario,
+                    sede_id=target_user.sede_id or horario.sede_id,
+                    vigente_desde=vigente_desde,
+                    vigente_hasta=vigente_hasta,
+                    es_principal=True,
+                    activo=True,
+                    creado_por=user
+                )
+                
+        return Response(self.get_serializer(horario).data, status=status.HTTP_201_CREATED)
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        data = request.data.copy()
+        user = request.user
+        
+        modo = data.get('modo') or instance.tipo_configuracion
+        sede_id = data.get('sede_id') or instance.sede_id
+        nombre = data.get('nombre') or instance.nombre
+        descripcion = data.get('descripcion') if 'descripcion' in data else instance.descripcion
+        dias = data.get('dias', None)
+        usuarios_ids = data.get('usuarios_ids', None)
+        
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None and int(sede_id) not in sedes_ids:
+            return Response({'error': 'No tienes permisos en la sede seleccionada'}, status=status.HTTP_403_FORBIDDEN)
+            
+        activo = data.get('activo') if 'activo' in data else instance.activo
+        serializer_data = {
+            'sede': sede_id,
+            'nombre': nombre,
+            'descripcion': descripcion,
+            'tipo_configuracion': modo,
+            'activo': activo
+        }
+        
+        serializer = self.get_serializer(instance, data=serializer_data, partial=kwargs.get('partial', False))
+        serializer.is_valid(raise_exception=True)
+        horario = serializer.save(actualizado_por=user)
+        
+        if not horario.activo:
+            deactivate_dependent_relations(horario)
+            
+        # Si se envían días, se reemplazan los detalles antiguos
+        if dias is not None:
+            instance.detalles.all().delete()
+            if modo == 'general_unico':
+                hora_inicio_entrada = data.get('hora_inicio_entrada')
+                hora_fin_entrada = data.get('hora_fin_entrada')
+                hora_inicio_salida = data.get('hora_inicio_salida')
+                hora_fin_salida = data.get('hora_fin_salida')
+                
+                # Intentar usar las del horario original si no se enviaron
+                if not all([hora_inicio_entrada, hora_fin_entrada, hora_inicio_salida, hora_fin_salida]):
+                    first_det = HorarioDetalle.objects.filter(horario=horario).first()
+                    if first_det:
+                        hora_inicio_entrada = hora_inicio_entrada or first_det.hora_inicio_entrada
+                        hora_fin_entrada = hora_fin_entrada or first_det.hora_fin_entrada
+                        hora_inicio_salida = hora_inicio_salida or first_det.hora_inicio_salida
+                        hora_fin_salida = hora_fin_salida or first_det.hora_fin_salida
+                
+                for dia in dias:
+                    HorarioDetalle.objects.create(
+                        horario=horario,
+                        dia_semana=dia.lower(),
+                        hora_inicio_entrada=hora_inicio_entrada,
+                        hora_fin_entrada=hora_fin_entrada,
+                        hora_inicio_salida=hora_inicio_salida,
+                        hora_fin_salida=hora_fin_salida
+                    )
+            elif modo == 'personalizado_por_dias':
+                for d in dias:
+                    HorarioDetalle.objects.create(
+                        horario=horario,
+                        dia_semana=d['dia_semana'].lower(),
+                        hora_inicio_entrada=d['hora_inicio_entrada'],
+                        hora_fin_entrada=d['hora_fin_entrada'],
+                        hora_inicio_salida=d['hora_inicio_salida'],
+                        hora_fin_salida=d['hora_fin_salida']
+                    )
+
+            # Validar si el cambio de detalles causó cruces para usuarios ya asignados
+            if horario.activo:
+                for uh in UsuarioHorario.objects.filter(horario=horario, activo=True):
+                    if check_usuario_horario_overlap(uh.usuario_id, horario.id, uh.vigente_desde, uh.vigente_hasta, exclude_uh_id=uh.id):
+                        transaction.set_rollback(True)
+                        return Response({'error': 'El usuario ya tiene un horario asignado que se cruza con este horario.'}, status=status.HTTP_400_BAD_REQUEST)
+                    
+        # Si se envían usuarios, sincronizamos sus asignaciones
+        if usuarios_ids is not None:
+            from datetime import date
+            vigente_desde = data.get('vigente_desde')
+            if not vigente_desde or vigente_desde == "":
+                vigente_desde = date.today().isoformat()
+            vigente_hasta = data.get('vigente_hasta')
+            if not vigente_hasta or vigente_hasta == "":
+                vigente_hasta = None
+            
+            # 1. Desactivar asignaciones de usuarios que YA NO están en la lista
+            UsuarioHorario.objects.filter(horario=horario, activo=True).exclude(usuario_id__in=usuarios_ids).update(activo=False, es_principal=False)
+            
+            # 2. Agregar asignaciones para los usuarios nuevos en la lista
+            for u_id in usuarios_ids:
+                exists = UsuarioHorario.objects.filter(horario=horario, usuario_id=u_id, activo=True).exists()
+                if not exists:
+                    try:
+                        target_user = Usuario.objects.get(id=u_id)
+                    except Usuario.DoesNotExist:
+                        continue
+                    
+                    if sedes_ids is not None and target_user.sede_id not in sedes_ids:
+                        continue
+                    
+                    if check_usuario_horario_overlap(u_id, horario.id, vigente_desde, vigente_hasta):
+                        transaction.set_rollback(True)
+                        return Response({'error': 'El usuario ya tiene un horario asignado que se cruza con este horario.'}, status=status.HTTP_400_BAD_REQUEST)
+                        
+                    UsuarioHorario.objects.create(
+                        usuario=target_user,
+                        horario=horario,
+                        sede_id=target_user.sede_id,
+                        vigente_desde=vigente_desde,
+                        vigente_hasta=vigente_hasta,
+                        es_principal=True,
+                        activo=True,
+                        creado_por=user
+                    )
+                    
+        return Response(self.get_serializer(horario).data, status=status.HTTP_200_OK)
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.activo = False
+        instance.actualizado_por = request.user
+        instance.save()
+        deactivate_dependent_relations(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class UsuarioHorarioViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UsuarioHorarioSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        sedes_ids = get_authorized_sedes_ids(user)
+        queryset = UsuarioHorario.objects.filter(activo=True)
+        if sedes_ids is not None:
+            queryset = queryset.filter(sede_id__in=sedes_ids)
+        sede_id = self.request.query_params.get('sede')
+        if sede_id:
+            queryset = queryset.filter(sede_id=sede_id)
+        return queryset
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        user = request.user
+        u_id = request.data.get('usuario')
+        h_id = request.data.get('horario')
+        vigente_desde = request.data.get('vigente_desde')
+        vigente_hasta = request.data.get('vigente_hasta', None)
+        observacion = request.data.get('observacion', '')
+        from datetime import date
+        if not vigente_desde or vigente_desde == "":
+            vigente_desde = date.today().isoformat()
+        if vigente_hasta == "":
+            vigente_hasta = None
+
+        if not all([u_id, h_id, vigente_desde]):
+            return Response({'error': 'Los campos usuario, horario y vigente_desde son obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            target_user = Usuario.objects.get(id=u_id)
+            horario = Horario.objects.get(id=h_id)
+        except (Usuario.DoesNotExist, Horario.DoesNotExist):
+            return Response({'error': 'Usuario o Horario no existen'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Security validation
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            if target_user.sede_id not in sedes_ids or horario.sede_id not in sedes_ids:
+                return Response({'error': 'No tienes permisos en las sedes correspondientes'}, status=status.HTTP_403_FORBIDDEN)
+                
+        # Validar cruces
+        if check_usuario_horario_overlap(u_id, h_id, vigente_desde, vigente_hasta):
+            transaction.set_rollback(True)
+            return Response({'error': 'El usuario ya tiene un horario asignado que se cruza con este horario.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Create assignment
+        uh = UsuarioHorario.objects.create(
+            usuario=target_user,
+            horario=horario,
+            sede_id=target_user.sede_id or horario.sede_id,
+            vigente_desde=vigente_desde,
+            vigente_hasta=vigente_hasta,
+            es_principal=True,
+            activo=True,
+            observacion=observacion,
+            creado_por=user
+        )
+        
+        return Response(self.get_serializer(uh).data, status=status.HTTP_201_CREATED)
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        data = request.data.copy()
+        user = request.user
+        
+        u_id = data.get('usuario') or instance.usuario_id
+        h_id = data.get('horario') or instance.horario_id
+        vigente_desde = data.get('vigente_desde')
+        vigente_hasta = data.get('vigente_hasta')
+        
+        if vigente_desde is None:
+            vigente_desde = instance.vigente_desde
+        if vigente_hasta is None:
+            vigente_hasta = instance.vigente_hasta
+        elif vigente_hasta == "":
+            vigente_hasta = None
+            
+        try:
+            target_user = Usuario.objects.get(id=u_id)
+            horario = Horario.objects.get(id=h_id)
+        except (Usuario.DoesNotExist, Horario.DoesNotExist):
+            return Response({'error': 'Usuario o Horario no existen'}, status=status.HTTP_404_NOT_FOUND)
+            
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            if target_user.sede_id not in sedes_ids or horario.sede_id not in sedes_ids:
+                return Response({'error': 'No tienes permisos en las sedes correspondientes'}, status=status.HTTP_403_FORBIDDEN)
+                
+        is_active = data.get('activo', True) if 'activo' in data else instance.activo
+        if is_active:
+            if check_usuario_horario_overlap(u_id, h_id, vigente_desde, vigente_hasta, exclude_uh_id=instance.id):
+                transaction.set_rollback(True)
+                return Response({'error': 'El usuario ya tiene un horario asignado que se cruza con este horario.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+        serializer = self.get_serializer(instance, data=data, partial=kwargs.get('partial', False))
+        serializer.is_valid(raise_exception=True)
+        uh = serializer.save(actualizado_por=user)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.activo = False
+        instance.es_principal = False
+        instance.actualizado_por = request.user
+        instance.save()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class IntercambioHorarioViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = IntercambioHorarioSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        sedes_ids = get_authorized_sedes_ids(user)
+        queryset = IntercambioHorario.objects.filter(activo=True)
+        if sedes_ids is not None:
+            queryset = queryset.filter(sede_id__in=sedes_ids)
+        sede_id = self.request.query_params.get('sede')
+        if sede_id:
+            queryset = queryset.filter(sede_id=sede_id)
+        return queryset
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        user = request.user
+        solicitante_id = request.data.get('usuario_solicitante')
+        reemplazo_id = request.data.get('usuario_reemplazo')
+        fecha_str = request.data.get('fecha_intercambio')
+        motivo = request.data.get('motivo', '')
+        observacion = request.data.get('observacion', '')
+        
+        if not all([solicitante_id, reemplazo_id, fecha_str]):
+            return Response({'error': 'Los campos usuario_solicitante, usuario_reemplazo y fecha_intercambio son obligatorios'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        from datetime import datetime
+        try:
+            fecha_val = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Fecha con formato inválido (debe ser YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            solicitante = Usuario.objects.get(id=solicitante_id)
+            reemplazo = Usuario.objects.get(id=reemplazo_id)
+        except Usuario.DoesNotExist:
+            return Response({'error': 'Uno o ambos usuarios no existen'}, status=status.HTTP_404_NOT_FOUND)
+            
+        # Security validation: same sede and authorized sede
+        sedes_ids = get_authorized_sedes_ids(user)
+        if sedes_ids is not None:
+            if solicitante.sede_id not in sedes_ids or reemplazo.sede_id not in sedes_ids:
+                return Response({'error': 'No tienes permisos en las sedes de estos usuarios'}, status=status.HTTP_403_FORBIDDEN)
+                
+        # Resolve original schedules directly from UsuarioHorario (avoiding exchange recursion)
+        uh_sol = UsuarioHorario.objects.filter(
+            usuario=solicitante,
+            activo=True,
+            vigente_desde__lte=fecha_val
+        ).filter(Q(vigente_hasta__gte=fecha_val) | Q(vigente_hasta__isnull=True)).first()
+        h_sol = uh_sol.horario if uh_sol else None
+
+        uh_ree = UsuarioHorario.objects.filter(
+            usuario=reemplazo,
+            activo=True,
+            vigente_desde__lte=fecha_val
+        ).filter(Q(vigente_hasta__gte=fecha_val) | Q(vigente_hasta__isnull=True)).first()
+        h_ree = uh_ree.horario if uh_ree else None
+        
+        # Create exchange record
+        intercambio = IntercambioHorario.objects.create(
+            sede_id=solicitante.sede_id,
+            usuario_solicitante=solicitante,
+            usuario_reemplazo=reemplazo,
+            fecha_intercambio=fecha_val,
+            horario_solicitante_original=h_sol,
+            horario_reemplazo_original=h_ree,
+            estado='aprobado',
+            motivo=motivo,
+            observacion=observacion,
+            registrado_por=user,
+            aprobado_por=user,
+            aprobado_at=timezone.now()
+        )
+        
+        return Response(self.get_serializer(intercambio).data, status=status.HTTP_201_CREATED)
+
+
+class SedesResumenView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        sedes_ids = get_authorized_sedes_ids(user)
+        
+        if sedes_ids is not None:
+            sedes = Sede.objects.filter(id__in=sedes_ids, activo=True)
+        else:
+            sedes = Sede.objects.filter(activo=True)
+            
+        resumen = []
+        for s in sedes:
+            # Horarios creados para esta sede
+            horarios_creados = Horario.objects.filter(sede=s, activo=True).count()
+            
+            # Usuarios de esta sede
+            usuarios_sede = Usuario.objects.filter(sede=s, activo=True)
+            
+            # De estos usuarios, cuántos tienen un horario asignado actualmente (o en el futuro)
+            # Para simplificar, buscamos si tienen algún UsuarioHorario activo principal
+            usuarios_con_horario = UsuarioHorario.objects.filter(
+                usuario__in=usuarios_sede, 
+                activo=True, 
+                es_principal=True
+            ).values_list('usuario_id', flat=True).distinct().count()
+            
+            total_usuarios = usuarios_sede.count()
+            usuarios_sin_horario = total_usuarios - usuarios_con_horario
+            
+            # Intercambios registrados para esta sede
+            intercambios_count = IntercambioHorario.objects.filter(sede=s, activo=True).count()
+            
+            resumen.append({
+                'sede_id': s.id,
+                'sede_nombre': s.nombre,
+                'horarios_creados': horarios_creados,
+                'usuarios_con_horario': usuarios_con_horario,
+                'usuarios_sin_horario': max(0, usuarios_sin_horario),
+                'intercambios_count': intercambios_count
+            })
+            
+        return Response(resumen, status=status.HTTP_200_OK)
 

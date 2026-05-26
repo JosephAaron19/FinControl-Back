@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion, HistorialJornada, JornadaActividad
+from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion, HistorialJornada, JornadaActividad, Horario, HorarioDetalle, UsuarioHorario, IntercambioHorario
 
 class JornadaActividadSerializer(serializers.ModelSerializer):
     class Meta:
@@ -219,3 +219,48 @@ class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
             sede = Sede.objects.filter(id=obj.sede_id).first()
             return sede.nombre if sede else f"Sede {obj.sede_id}"
         return "-"
+
+
+class HorarioDetalleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HorarioDetalle
+        fields = '__all__'
+
+
+class HorarioSerializer(serializers.ModelSerializer):
+    detalles = HorarioDetalleSerializer(many=True, read_only=True)
+    sede_nombre = serializers.ReadOnlyField(source='sede.nombre')
+    creado_por_nombre = serializers.ReadOnlyField(source='creado_por.nombre_completo')
+    usuario_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Horario
+        fields = '__all__'
+
+    def get_usuario_count(self, obj):
+        return obj.usuarios_horario.filter(activo=True).count()
+
+
+class UsuarioHorarioSerializer(serializers.ModelSerializer):
+    usuario_nombre = serializers.ReadOnlyField(source='usuario.nombre_completo')
+    usuario_rol = serializers.ReadOnlyField(source='usuario.rol.nombre')
+    horario_nombre = serializers.ReadOnlyField(source='horario.nombre')
+    sede_nombre = serializers.ReadOnlyField(source='sede.nombre')
+    horario_detalles = HorarioDetalleSerializer(source='horario.detalles', many=True, read_only=True)
+
+    class Meta:
+        model = UsuarioHorario
+        fields = '__all__'
+
+
+class IntercambioHorarioSerializer(serializers.ModelSerializer):
+    usuario_solicitante_nombre = serializers.ReadOnlyField(source='usuario_solicitante.nombre_completo')
+    usuario_reemplazo_nombre = serializers.ReadOnlyField(source='usuario_reemplazo.nombre_completo')
+    horario_solicitante_original_nombre = serializers.ReadOnlyField(source='horario_solicitante_original.nombre')
+    horario_reemplazo_original_nombre = serializers.ReadOnlyField(source='horario_reemplazo_original.nombre')
+    registrado_por_nombre = serializers.ReadOnlyField(source='registrado_por.nombre_completo')
+    aprobado_por_nombre = serializers.ReadOnlyField(source='aprobado_por.nombre_completo')
+
+    class Meta:
+        model = IntercambioHorario
+        fields = '__all__'

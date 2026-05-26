@@ -349,3 +349,96 @@ class JornadaActividad(models.Model):
         db_table = 'jornada_actividades'
         verbose_name = 'Actividad de Jornada'
         verbose_name_plural = 'Actividades de Jornada'
+
+
+class Horario(models.Model):
+    id = models.AutoField(primary_key=True)
+    sede = models.ForeignKey(Sede, on_delete=models.CASCADE, related_name='horarios')
+    nombre = models.CharField(max_length=150)
+    descripcion = models.TextField(null=True, blank=True)
+    activo = models.BooleanField(default=True, null=True, blank=True)
+    creado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='horarios_creados', db_column='creado_por')
+    actualizado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='horarios_actualizados', db_column='actualizado_por')
+    creado_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    actualizado_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+    tipo_configuracion = models.CharField(max_length=50, blank=True, null=True)
+
+    class Meta:
+        db_table = 'horarios'
+        verbose_name = 'Horario'
+        verbose_name_plural = 'Horarios'
+
+    def __str__(self):
+        return f"{self.nombre} - Sede: {self.sede.nombre}"
+
+
+class HorarioDetalle(models.Model):
+    id = models.AutoField(primary_key=True)
+    horario = models.ForeignKey(Horario, on_delete=models.CASCADE, related_name='detalles')
+    dia_semana = models.CharField(max_length=50) # 'lunes', 'martes', etc.
+    hora_inicio_entrada = models.TimeField()
+    hora_fin_entrada = models.TimeField()
+    hora_inicio_salida = models.TimeField()
+    hora_fin_salida = models.TimeField()
+    activo = models.BooleanField(default=True, null=True, blank=True)
+    creado_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    actualizado_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        db_table = 'horario_detalles'
+        verbose_name = 'Detalle de Horario'
+        verbose_name_plural = 'Detalles de Horarios'
+
+    def __str__(self):
+        return f"{self.horario.nombre} - Dia: {self.dia_semana} ({self.hora_inicio_entrada} - {self.hora_fin_salida})"
+
+
+class UsuarioHorario(models.Model):
+    id = models.AutoField(primary_key=True)
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='horarios_usuario')
+    horario = models.ForeignKey(Horario, on_delete=models.CASCADE, related_name='usuarios_horario')
+    sede = models.ForeignKey(Sede, on_delete=models.SET_NULL, null=True, blank=True, related_name='usuarios_horario_sede')
+    vigente_desde = models.DateField()
+    vigente_hasta = models.DateField(null=True, blank=True)
+    activo = models.BooleanField(default=True, null=True, blank=True)
+    es_principal = models.BooleanField(default=True, null=True, blank=True)
+    observacion = models.TextField(null=True, blank=True)
+    creado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='usuario_horarios_creados', db_column='creado_por')
+    actualizado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='usuario_horarios_actualizados', db_column='actualizado_por')
+    creado_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    actualizado_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        db_table = 'usuario_horarios'
+        verbose_name = 'Horario de Usuario'
+        verbose_name_plural = 'Horarios de Usuarios'
+
+    def __str__(self):
+        return f"{self.usuario.nombre_completo} -> {self.horario.nombre}"
+
+
+class IntercambioHorario(models.Model):
+    id = models.AutoField(primary_key=True)
+    sede = models.ForeignKey(Sede, on_delete=models.SET_NULL, null=True, blank=True, related_name='intercambios')
+    usuario_solicitante = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='intercambios_solicitados', db_column='usuario_solicitante_id')
+    usuario_reemplazo = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='intercambios_reemplazos', db_column='usuario_reemplazo_id')
+    fecha_intercambio = models.DateField()
+    horario_solicitante_original = models.ForeignKey(Horario, on_delete=models.SET_NULL, null=True, blank=True, related_name='intercambios_solicitante_orig', db_column='horario_solicitante_original_id')
+    horario_reemplazo_original = models.ForeignKey(Horario, on_delete=models.SET_NULL, null=True, blank=True, related_name='intercambios_reemplazo_orig', db_column='horario_reemplazo_original_id')
+    estado = models.CharField(max_length=50, default='aprobado', null=True, blank=True) # 'pendiente', 'aprobado', 'rechazado'
+    motivo = models.TextField(null=True, blank=True)
+    observacion = models.TextField(null=True, blank=True)
+    registrado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='intercambios_registrados', db_column='registrado_por')
+    aprobado_por = models.ForeignKey(Usuario, on_delete=models.SET_NULL, null=True, blank=True, related_name='intercambios_aprobados', db_column='aprobado_por')
+    aprobado_at = models.DateTimeField(null=True, blank=True)
+    activo = models.BooleanField(default=True, null=True, blank=True)
+    creado_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    actualizado_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        db_table = 'intercambios_horario'
+        verbose_name = 'Intercambio de Horario'
+        verbose_name_plural = 'Intercambios de Horarios'
+
+    def __str__(self):
+        return f"{self.usuario_solicitante.nombre_completo} <-> {self.usuario_reemplazo.nombre_completo} ({self.fecha_intercambio})"

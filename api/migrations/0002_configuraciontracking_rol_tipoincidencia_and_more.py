@@ -27,7 +27,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Configuración de Tracking',
                 'verbose_name_plural': 'Configuraciones de Tracking',
-                'db_table': 'finc"."configuracion_tracking',
+                'db_table': 'configuracion_tracking',
             },
         ),
         migrations.CreateModel(
@@ -44,7 +44,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Rol',
                 'verbose_name_plural': 'Roles',
-                'db_table': 'finc"."roles',
+                'db_table': 'roles',
             },
         ),
         migrations.CreateModel(
@@ -63,7 +63,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Tipo de Incidencia',
                 'verbose_name_plural': 'Tipos de Incidencia',
-                'db_table': 'finc"."tipos_incidencia',
+                'db_table': 'tipos_incidencia',
             },
         ),
         migrations.RemoveField(
@@ -190,22 +190,6 @@ class Migration(migrations.Migration):
             name='asistencia',
             field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='incidencias_detalle', to='api.asistencia'),
         ),
-        migrations.AlterModelTable(
-            name='asistencia',
-            table='finc"."asistencias',
-        ),
-        migrations.AlterModelTable(
-            name='incidencia',
-            table='finc"."incidencias',
-        ),
-        migrations.AlterModelTable(
-            name='sede',
-            table='finc"."sedes',
-        ),
-        migrations.AlterModelTable(
-            name='usuario',
-            table='finc"."usuarios',
-        ),
         migrations.CreateModel(
             name='AsistenciaEvento',
             fields=[
@@ -226,7 +210,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Evento de Asistencia',
                 'verbose_name_plural': 'Eventos de Asistencia',
-                'db_table': 'finc"."asistencia_eventos',
+                'db_table': 'asistencia_eventos',
             },
         ),
         migrations.CreateModel(
@@ -274,7 +258,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Historial de Jornada',
                 'verbose_name_plural': 'Historial de Jornadas',
-                'db_table': 'finc"."historial_jornadas',
+                'db_table': 'historial_jornadas',
             },
         ),
         migrations.AddField(
@@ -316,7 +300,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Punto de Ubicación',
                 'verbose_name_plural': 'Puntos de Ubicación',
-                'db_table': 'finc"."ubicacion_puntos',
+                'db_table': 'ubicacion_puntos',
             },
         ),
     ]

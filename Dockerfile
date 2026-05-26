@@ -25,11 +25,16 @@ RUN pip install --upgrade pip && \
 # Copiar el código del proyecto al contenedor
 COPY . /app/
 
-# Crear un usuario no-root para mayor seguridad (opcional pero recomendado)
-RUN adduser --disabled-password --no-create-home djangouser
+# Crear directorio media con permisos adecuados
+RUN mkdir -p /app/media && chmod 755 /app/media
+
+# Crear un usuario no-root para mayor seguridad
+RUN adduser --disabled-password --no-create-home djangouser && \
+    chown -R djangouser:djangouser /app
+
 USER djangouser
 
-# Exponer el puerto que usará Django/Gunicorn
+# Exponer el puerto que usará Django/Daphne
 EXPOSE 8000
 
 # Ejecutar Daphne (soporta WebSockets/ASGI)

@@ -9,7 +9,7 @@ from .views import (
     IncidenciaListView, AsistenciaListView, ActividadHoyView, ActividadDetalleUsuarioView,
     JornadaEstadoMarcacionView, JornadaConfiguracionViewSet, HistorialJornadaListView,
     HistorialJornadaDetalleView, JornadaActividadViewSet, JourneyTrackingMapView, JourneyTrackingRecorridoJornadaView,
-    HorarioViewSet, UsuarioHorarioViewSet, IntercambioHorarioViewSet, SedesResumenView
+    HorarioViewSet, UsuarioHorarioViewSet, IntercambioHorarioViewSet, SedesResumenView, DashboardResumenView
 )
 
 router = DefaultRouter()
@@ -44,6 +44,7 @@ urlpatterns = [
     path('tracking/recorrido-jornada/<int:historial_jornada_id>/', JourneyTrackingRecorridoJornadaView.as_view(), name='recorrido_jornada'),
 
     # Web Dashboard Endpoints
+    path('dashboard/resumen/', DashboardResumenView.as_view(), name='dashboard_resumen'),
     path('roles/', RolListView.as_view(), name='rol_list'),
     path('tipos-incidencia/', TipoIncidenciaListView.as_view(), name='tipo_incidencia_list'),
     path('sedes/resumen/', SedesResumenView.as_view(), name='sedes_resumen'),

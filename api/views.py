@@ -674,14 +674,14 @@ class SedeDetailView(generics.RetrieveUpdateDestroyAPIView):
         
         queryset = Sede.objects.all()
         
-        if any(role in rol_nombre for role in ['admin', 'superadmin', 'gerente', 'super administrador']):
+        if any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador']):
             return queryset
             
         sedes_ids = get_authorized_sedes_ids(user)
         if sedes_ids is not None:
             return queryset.filter(id__in=sedes_ids)
             
-        if 'operador' in rol_nombre:
+        if 'operador' in rol_nombre or 'asesor' in rol_nombre:
             if user.sede_id:
                 return queryset.filter(id=user.sede_id)
             return Sede.objects.none()
@@ -914,6 +914,7 @@ class JornadaEstadoMarcacionView(APIView):
                 'puede_finalizar_break': False,
                 'puede_iniciar_actividad': False,
                 'puede_finalizar_actividad': False,
+                'puede_culminar_actividad': False,
                 'actividad_en_proceso': None,
                 'estado_jornada': 'no_iniciada',
                 'mensaje': 'No tienes horario asignado para hoy',
@@ -1032,6 +1033,7 @@ class JornadaEstadoMarcacionView(APIView):
             'puede_finalizar_break': puede_finalizar_descanso,
             'puede_iniciar_actividad': puede_iniciar_actividad,
             'puede_finalizar_actividad': puede_finalizar_actividad,
+            'puede_culminar_actividad': puede_finalizar_actividad,
             'actividad_en_proceso': actividad_en_proceso,
             'estado_jornada': estado_jornada,
             'mensaje': mensaje,
@@ -1054,14 +1056,16 @@ class JourneyTrackingMapView(APIView):
         asistencia = get_object_or_404(Asistencia, id=asistencia_id)
         user = request.user
         rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        is_admin = any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador'])
         
         # Validar permisos
-        sedes_ids = get_authorized_sedes_ids(user)
-        if sedes_ids is not None:
-            if asistencia.usuario.sede_id not in sedes_ids:
-                return Response({'error': 'No autorizado para ver este recorrido'}, status=status.HTTP_403_FORBIDDEN)
-        elif asistencia.usuario != user:
-             return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
+        if not is_admin:
+            sedes_ids = get_authorized_sedes_ids(user)
+            if sedes_ids is not None:
+                if asistencia.usuario.sede_id not in sedes_ids:
+                    return Response({'error': 'No autorizado para ver este recorrido'}, status=status.HTTP_403_FORBIDDEN)
+            elif asistencia.usuario != user:
+                 return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
 
         puntos = UbicacionPunto.objects.filter(asistencia=asistencia).order_by('fecha_hora')
         
@@ -1616,6 +1620,15 @@ class JornadaActividadViewSet(viewsets.ModelViewSet):
         
         return Response(self.get_serializer(actividad).data, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['get'])
+    def actual(self, request):
+        user = request.user
+        actividad = JornadaActividad.objects.filter(usuario=user, estado_actividad='en_proceso').first()
+        if not actividad:
+            return Response(None, status=status.HTTP_204_NO_CONTENT)
+        serializer = self.get_serializer(actividad)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class HorarioViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -2102,4 +2115,369 @@ class SedesResumenView(APIView):
             })
             
         return Response(resumen, status=status.HTTP_200_OK)
+
+
+class DashboardResumenView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        is_admin = any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador'])
+        is_gerente = any(role in rol_nombre for role in ['gerente', 'supervisor'])
+
+        if not is_admin and not is_gerente:
+            return Response({'error': 'No tiene permisos para ver este panel.'}, status=status.HTTP_403_FORBIDDEN)
+
+        today = timezone.localdate() if timezone.is_aware(timezone.now()) else timezone.now().date()
+        rango = request.query_params.get('rango', 'hoy').lower()
+        sede_id = request.query_params.get('sede', None)
+
+        if rango == 'semana':
+            fecha_inicio = today - timezone.timedelta(days=6)
+            fecha_fin = today
+        elif rango == 'mes':
+            fecha_inicio = today - timezone.timedelta(days=29)
+            fecha_fin = today
+        else: # default 'hoy'
+            fecha_inicio = today
+            fecha_fin = today
+
+        # Overwrite if explicit query params are passed
+        fecha_inicio_param = request.query_params.get('fecha_inicio', None)
+        fecha_fin_param = request.query_params.get('fecha_fin', None)
+        if fecha_inicio_param:
+            try:
+                fecha_inicio = timezone.datetime.strptime(fecha_inicio_param, '%Y-%m-%d').date()
+            except ValueError:
+                pass
+        if fecha_fin_param:
+            try:
+                fecha_fin = timezone.datetime.strptime(fecha_fin_param, '%Y-%m-%d').date()
+            except ValueError:
+                pass
+
+        authorized_sedes = get_authorized_sedes_ids(user)
+        if authorized_sedes is not None:
+            if sede_id:
+                try:
+                    s_id = int(sede_id)
+                    if s_id in authorized_sedes:
+                        sedes_filter = [s_id]
+                    else:
+                        sedes_filter = []
+                except ValueError:
+                    sedes_filter = authorized_sedes
+            else:
+                sedes_filter = authorized_sedes
+        else:
+            if sede_id:
+                try:
+                    sedes_filter = [int(sede_id)]
+                except ValueError:
+                    sedes_filter = None
+            else:
+                sedes_filter = None
+
+        # 1. Resumen general
+        usuarios_qs = Usuario.objects.all()
+        if sedes_filter is not None:
+            usuarios_qs = usuarios_qs.filter(sede_id__in=sedes_filter)
+
+        total_usuarios = usuarios_qs.count()
+        total_operadores = usuarios_qs.filter(rol__codigo__iexact='operador').count()
+        total_asesores = usuarios_qs.filter(rol__codigo__iexact='asesor').count()
+        total_gerentes = usuarios_qs.filter(rol__codigo__in=['gerente', 'supervisor']).count()
+        usuarios_activos = usuarios_qs.filter(activo=True).count()
+        usuarios_inactivos = usuarios_qs.filter(activo=False).count()
+
+        sedes_qs = Sede.objects.all()
+        if sedes_filter is not None:
+            sedes_qs = sedes_qs.filter(id__in=sedes_filter)
+        total_sedes = sedes_qs.count()
+        sedes_activas = sedes_qs.filter(activo=True).count()
+
+        # 2. Resumen de jornadas del periodo
+        jornadas_qs = HistorialJornada.objects.filter(fecha__range=(fecha_inicio, fecha_fin))
+        if sedes_filter is not None:
+            jornadas_qs = jornadas_qs.filter(sede_id__in=sedes_filter)
+
+        jornadas_programadas = jornadas_qs.filter(estado_asistencia='programada').count()
+        jornadas_en_proceso = jornadas_qs.filter(estado_asistencia='en_proceso').count()
+        jornadas_completas = jornadas_qs.filter(estado_asistencia__in=['completa', 'completada']).count()
+        jornadas_incompletas = jornadas_qs.filter(estado_asistencia='incompleta').count()
+        jornadas_ausentes = jornadas_qs.filter(estado_asistencia='ausente').count()
+
+        total_entradas_marcadas = jornadas_qs.filter(hora_entrada__isnull=False).count()
+        total_salidas_marcadas = jornadas_qs.filter(hora_salida__isnull=False).count()
+
+        # 3. Puntualidad
+        puntual = jornadas_qs.filter(estado_puntualidad='puntual').count()
+        tardanza = jornadas_qs.filter(estado_puntualidad='tardanza').count()
+        temprano = jornadas_qs.filter(estado_puntualidad='temprano').count()
+        no_marco_entrada = jornadas_qs.filter(estado_puntualidad='no_marco_entrada').count()
+
+        # 4. Salidas
+        salida_en_rango = jornadas_qs.filter(estado_salida='puntual').count()
+        salida_fuera_rango = jornadas_qs.filter(estado_salida='tardanza').count()
+        no_marco_salida = jornadas_qs.filter(estado_salida='no_marco_salida').count()
+
+        # 5. Incidencias
+        incidencias_qs = Incidencia.objects.filter(fecha_hora_reporte__date__range=(fecha_inicio, fecha_fin))
+        if sedes_filter is not None:
+            incidencias_qs = incidencias_qs.filter(usuario__sede_id__in=sedes_filter)
+
+        incidencias_hoy_qs = Incidencia.objects.filter(fecha_hora_reporte__date=today)
+        if sedes_filter is not None:
+            incidencias_hoy_qs = incidencias_hoy_qs.filter(usuario__sede_id__in=sedes_filter)
+
+        total_incidencias_hoy = incidencias_hoy_qs.count()
+        incidencias_pendientes = incidencias_qs.filter(estado_revision__iexact='pendiente').count()
+        incidencias_revisadas = incidencias_qs.filter(estado_revision__in=['aprobado', 'rechazado']).count()
+
+        incidencias_por_tipo = []
+        tipo_counts = incidencias_qs.values('tipo_incidencia').annotate(count=models.Count('id')).order_by('-count')
+        for tc in tipo_counts:
+            incidencias_por_tipo.append({
+                'tipo': tc['tipo_incidencia'] or 'Otro',
+                'cantidad': tc['count']
+            })
+
+        # 6. Actividades de asesores
+        actividades_qs = JornadaActividad.objects.filter(hora_inicio_actividad__date__range=(fecha_inicio, fecha_fin))
+        if sedes_filter is not None:
+            actividades_qs = actividades_qs.filter(sede_id__in=sedes_filter)
+
+        actividades_hoy_qs = JornadaActividad.objects.filter(hora_inicio_actividad__date=today)
+        if sedes_filter is not None:
+            actividades_hoy_qs = actividades_hoy_qs.filter(sede_id__in=sedes_filter)
+
+        actividades_hoy = actividades_hoy_qs.count()
+        actividades_en_proceso = actividades_qs.filter(estado_actividad='en_proceso').count()
+        actividades_finalizadas = actividades_qs.filter(estado_actividad='finalizada').count()
+
+        asesores_qs = usuarios_qs.filter(rol__codigo__iexact='asesor', activo=True)
+        total_asesores_activos = asesores_qs.count()
+        asesores_con_act_ids = actividades_qs.values_list('usuario_id', flat=True).distinct()
+        asesores_con_actividad = asesores_qs.filter(id__in=asesores_con_act_ids).count()
+        asesores_sin_actividad = max(0, total_asesores_activos - asesores_con_actividad)
+
+        # 7. Tracking GPS
+        gps_hoy_qs = UbicacionPunto.objects.filter(fecha_hora__date=today)
+        if sedes_filter is not None:
+            gps_hoy_qs = gps_hoy_qs.filter(usuario__sede_id__in=sedes_filter)
+
+        total_puntos_gps_hoy = gps_hoy_qs.count()
+
+        fifteen_mins_ago = timezone.now() - timezone.timedelta(minutes=15)
+        active_tracking_users = UbicacionPunto.objects.filter(fecha_hora__gte=fifteen_mins_ago)
+        if sedes_filter is not None:
+            active_tracking_users = active_tracking_users.filter(usuario__sede_id__in=sedes_filter)
+        usuarios_con_tracking_activo = active_tracking_users.values('usuario').distinct().count()
+
+        usuarios_fuera_de_zona = gps_hoy_qs.filter(es_fuera_de_zona=True).values('usuario').distinct().count()
+
+        # Ultima ubicacion registrada por usuario hoy
+        ultimas_ubicaciones = []
+        users_with_gps = list(gps_hoy_qs.values_list('usuario_id', flat=True).distinct())
+        for user_id in users_with_gps:
+            latest_point = gps_hoy_qs.filter(usuario_id=user_id).select_related('usuario').order_by('-fecha_hora').first()
+            if latest_point:
+                ultimas_ubicaciones.append({
+                    'usuario_id': user_id,
+                    'usuario_nombre': latest_point.usuario.nombre_completo,
+                    'latitud': float(latest_point.latitud),
+                    'longitud': float(latest_point.longitud),
+                    'fecha_hora': latest_point.fecha_hora.isoformat(),
+                    'bateria': latest_point.bateria_porcentaje,
+                    'es_fuera_de_zona': latest_point.es_fuera_de_zona,
+                    'distancia_sede_metros': float(latest_point.distancia_sede_metros) if latest_point.distancia_sede_metros else None
+                })
+
+        # 8. Datos para gráficos
+        by_date = {}
+        curr = fecha_inicio
+        while curr <= fecha_fin:
+            by_date[curr.isoformat()] = {'fecha': curr.isoformat(), 'completa': 0, 'incompleta': 0, 'ausente': 0}
+            curr += timezone.timedelta(days=1)
+
+        day_stats = jornadas_qs.values('fecha', 'estado_asistencia').annotate(count=models.Count('id'))
+        for ds in day_stats:
+            f_str = ds['fecha'].isoformat()
+            est = ds['estado_asistencia']
+            if f_str in by_date:
+                if est in ['completa', 'completada']:
+                    by_date[f_str]['completa'] += ds['count']
+                elif est == 'incompleta':
+                    by_date[f_str]['incompleta'] += ds['count']
+                elif est == 'ausente':
+                    by_date[f_str]['ausente'] += ds['count']
+        asistencia_por_dia_semana = list(by_date.values())
+
+        jornadas_por_estado = [
+            {'estado': 'Programada', 'cantidad': jornadas_programadas},
+            {'estado': 'En Proceso', 'cantidad': jornadas_en_proceso},
+            {'estado': 'Completada', 'cantidad': jornadas_completas},
+            {'estado': 'Incompleta', 'cantidad': jornadas_incompletas},
+            {'estado': 'Ausente', 'cantidad': jornadas_ausentes}
+        ]
+
+        puntualidad_por_estado = [
+            {'estado': 'Puntual', 'cantidad': puntual},
+            {'estado': 'Tardanza', 'cantidad': tardanza},
+            {'estado': 'Temprano', 'cantidad': temprano},
+            {'estado': 'No Marcó', 'cantidad': no_marco_entrada}
+        ]
+
+        actividades_por_estado = [
+            {'estado': 'En Proceso', 'cantidad': actividades_en_proceso},
+            {'estado': 'Finalizada', 'cantidad': actividades_finalizadas}
+        ]
+
+        usuarios_por_sede = []
+        sede_counts = usuarios_qs.values('sede__nombre').annotate(count=models.Count('id')).order_by('-count')
+        for sc in sede_counts:
+            usuarios_por_sede.append({
+                'sede': sc['sede__nombre'] or 'Sin Sede',
+                'cantidad': sc['count']
+            })
+
+        # 9. Actividad reciente
+        eventos_qs = AsistenciaEvento.objects.select_related('usuario', 'usuario__rol', 'usuario__sede').all()
+        if sedes_filter is not None:
+            eventos_qs = eventos_qs.filter(usuario__sede_id__in=sedes_filter)
+        eventos_recent = eventos_qs.order_by('-fecha_hora')[:15]
+
+        incidencias_recent_qs = Incidencia.objects.select_related('usuario', 'usuario__rol', 'usuario__sede').all()
+        if sedes_filter is not None:
+            incidencias_recent_qs = incidencias_recent_qs.filter(usuario__sede_id__in=sedes_filter)
+        incidencias_recent = incidencias_recent_qs.order_by('-fecha_hora_reporte')[:15]
+
+        actividades_recent_qs = JornadaActividad.objects.select_related('usuario', 'usuario__rol', 'sede').all()
+        if sedes_filter is not None:
+            actividades_recent_qs = actividades_recent_qs.filter(sede_id__in=sedes_filter)
+        actividades_recent = actividades_recent_qs.order_by('-hora_inicio_actividad')[:15]
+
+        fuera_recent_qs = UbicacionPunto.objects.filter(es_fuera_de_zona=True).select_related('usuario', 'usuario__rol', 'usuario__sede').all()
+        if sedes_filter is not None:
+            fuera_recent_qs = fuera_recent_qs.filter(usuario__sede_id__in=sedes_filter)
+        fuera_recent = fuera_recent_qs.order_by('-fecha_hora')[:15]
+
+        unified_events = []
+        for e in eventos_recent:
+            unified_events.append({
+                'usuario': e.usuario.nombre_completo,
+                'rol': e.usuario.rol.nombre if e.usuario.rol else 'Operador',
+                'sede': e.usuario.sede.nombre if e.usuario.sede else 'Sede Principal',
+                'tipo_evento': e.tipo_evento,
+                'fecha_hora': e.fecha_hora.isoformat(),
+                'estado': 'info',
+                'descripcion': f"Marcó {e.tipo_evento.replace('_', ' ').lower()}"
+            })
+        for inc in incidencias_recent:
+            unified_events.append({
+                'usuario': inc.usuario.nombre_completo,
+                'rol': inc.usuario.rol.nombre if inc.usuario.rol else 'Operador',
+                'sede': inc.usuario.sede.nombre if inc.usuario.sede else 'Sede Principal',
+                'tipo_evento': 'INCIDENCIA',
+                'fecha_hora': inc.fecha_hora_reporte.isoformat(),
+                'estado': 'danger',
+                'descripcion': f"Reportó incidencia: {inc.tipo_incidencia}"
+            })
+        for act in actividades_recent:
+            unified_events.append({
+                'usuario': act.usuario.nombre_completo,
+                'rol': act.usuario.rol.nombre if act.usuario.rol else 'Asesor',
+                'sede': act.sede.nombre if act.sede else 'Sede Principal',
+                'tipo_evento': 'ACTIVIDAD_INICIO',
+                'fecha_hora': act.hora_inicio_actividad.isoformat(),
+                'estado': 'warning' if act.estado_actividad == 'en_proceso' else 'success',
+                'descripcion': f"Inició actividad: {act.titulo}"
+            })
+            if act.hora_fin_actividad:
+                unified_events.append({
+                    'usuario': act.usuario.nombre_completo,
+                    'rol': act.usuario.rol.nombre if act.usuario.rol else 'Asesor',
+                    'sede': act.sede.nombre if act.sede else 'Sede Principal',
+                    'tipo_evento': 'ACTIVIDAD_FIN',
+                    'fecha_hora': act.hora_fin_actividad.isoformat(),
+                    'estado': 'success',
+                    'descripcion': f"Finalizó actividad: {act.titulo}"
+                })
+        for f in fuera_recent:
+            unified_events.append({
+                'usuario': f.usuario.nombre_completo,
+                'rol': f.usuario.rol.nombre if f.usuario.rol else 'Operador',
+                'sede': f.usuario.sede.nombre if f.usuario.sede else 'Sede Principal',
+                'tipo_evento': 'FUERA_DE_ZONA',
+                'fecha_hora': f.fecha_hora.isoformat(),
+                'estado': 'danger',
+                'descripcion': "Se detectó fuera de la zona autorizada"
+            })
+
+        unified_events.sort(key=lambda x: x['fecha_hora'], reverse=True)
+        recent_activity = unified_events[:20]
+
+        resumen_data = {
+            'resumen_general': {
+                'total_usuarios': total_usuarios,
+                'total_operadores': total_operadores,
+                'total_asesores': total_asesores,
+                'total_gerentes': total_gerentes,
+                'total_sedes': total_sedes,
+                'sedes_activas': sedes_activas,
+                'usuarios_activos': usuarios_activos,
+                'usuarios_inactivos': usuarios_inactivos
+            },
+            'jornadas_dia': {
+                'jornadas_programadas': jornadas_programadas,
+                'jornadas_en_proceso': jornadas_en_proceso,
+                'jornadas_completas': jornadas_completas,
+                'jornadas_incompletas': jornadas_incompletas,
+                'jornadas_ausentes': jornadas_ausentes,
+                'total_entradas_marcadas': total_entradas_marcadas,
+                'total_salidas_marcadas': total_salidas_marcadas
+            },
+            'puntualidad': {
+                'puntual': puntual,
+                'tardanza': tardanza,
+                'temprano': temprano,
+                'no_marco_entrada': no_marco_entrada
+            },
+            'salidas': {
+                'salida_en_rango': salida_en_rango,
+                'salida_fuera_rango': salida_fuera_rango,
+                'no_marco_salida': no_marco_salida
+            },
+            'incidencias': {
+                'total_incidencias_hoy': total_incidencias_hoy,
+                'incidencias_pendientes': incidencias_pendientes,
+                'incidencias_revisadas': incidencias_revisadas,
+                'incidencias_por_tipo': incidencias_por_tipo
+            },
+            'actividades': {
+                'actividades_hoy': actividades_hoy,
+                'actividades_en_proceso': actividades_en_proceso,
+                'actividades_finalizadas': actividades_finalizadas,
+                'asesores_con_actividad': asesores_con_actividad,
+                'asesores_sin_actividad': asesores_sin_actividad
+            },
+            'tracking': {
+                'usuarios_con_tracking_activo': usuarios_con_tracking_activo,
+                'usuarios_fuera_de_zona': usuarios_fuera_de_zona,
+                'total_puntos_gps_hoy': total_puntos_gps_hoy,
+                'ultimas_ubicaciones': ultimas_ubicaciones
+            },
+            'graficos': {
+                'asistencia_por_dia_semana': asistencia_por_dia_semana,
+                'jornadas_por_estado': jornadas_por_estado,
+                'puntualidad_por_estado': puntualidad_por_estado,
+                'incidencias_por_tipo': incidencias_por_tipo,
+                'actividades_por_estado': actividades_por_estado,
+                'usuarios_por_sede': usuarios_por_sede
+            },
+            'actividad_reciente': recent_activity
+        }
+
+        return Response(resumen_data, status=status.HTTP_200_OK)
 

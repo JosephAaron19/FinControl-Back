@@ -10,44 +10,4 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AlterModelTable(
-            name='asistencia',
-            table='asistencias',
-        ),
-        migrations.AlterModelTable(
-            name='asistenciaevento',
-            table='asistencia_eventos',
-        ),
-        migrations.AlterModelTable(
-            name='configuraciontracking',
-            table='configuracion_tracking',
-        ),
-        migrations.AlterModelTable(
-            name='historialjornada',
-            table='historial_jornadas',
-        ),
-        migrations.AlterModelTable(
-            name='incidencia',
-            table='incidencias',
-        ),
-        migrations.AlterModelTable(
-            name='rol',
-            table='roles',
-        ),
-        migrations.AlterModelTable(
-            name='sede',
-            table='sedes',
-        ),
-        migrations.AlterModelTable(
-            name='tipoincidencia',
-            table='tipos_incidencia',
-        ),
-        migrations.AlterModelTable(
-            name='ubicacionpunto',
-            table='ubicacion_puntos',
-        ),
-        migrations.AlterModelTable(
-            name='usuario',
-            table='usuarios',
-        ),
     ]

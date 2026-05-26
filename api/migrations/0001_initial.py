@@ -28,7 +28,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Sede',
                 'verbose_name_plural': 'Sedes',
-                'db_table': '"FinC"."sedes"',
+                'db_table': 'sedes',
             },
         ),
         migrations.CreateModel(
@@ -51,7 +51,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Usuario',
                 'verbose_name_plural': 'Usuarios',
-                'db_table': '"FinC"."usuarios"',
+                'db_table': 'usuarios',
             },
         ),
         migrations.CreateModel(
@@ -75,7 +75,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Asistencia',
                 'verbose_name_plural': 'Asistencias',
-                'db_table': '"FinC"."asistencias"',
+                'db_table': 'asistencias',
                 'unique_together': {('usuario', 'fecha')},
             },
         ),
@@ -94,7 +94,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Incidencia',
                 'verbose_name_plural': 'Incidencias',
-                'db_table': '"FinC"."incidencias"',
+                'db_table': 'incidencias',
             },
         ),
     ]

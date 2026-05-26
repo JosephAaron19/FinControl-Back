@@ -104,10 +104,21 @@ class AsistenciaSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class IncidenciaSerializer(serializers.ModelSerializer):
+    tipo_incidencia_0 = TipoIncidenciaSerializer(read_only=True)
+    foto = serializers.SerializerMethodField()
+
     class Meta:
         model = Incidencia
         fields = '__all__'
         read_only_fields = ('usuario', 'asistencia', 'fecha_hora_reporte', 'estado_revision')
+
+    def get_foto(self, obj):
+        if obj.foto_evidencia_url:
+            request = self.context.get('request')
+            if request is not None:
+                return request.build_absolute_uri(obj.foto_evidencia_url.url)
+            return obj.foto_evidencia_url.url
+        return obj.evidencia_url or None
 
 class AsistenciaEventoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -200,7 +211,7 @@ class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
     eventos = AsistenciaEventoSerializer(source='asistencia.eventos', many=True, read_only=True)
     incidencias = IncidenciaSerializer(source='asistencia.incidencias_detalle', many=True, read_only=True)
     puntos_gps = UbicacionPuntoSerializer(source='asistencia.puntos_gps', many=True, read_only=True)
-    actividades_campo = JornadaActividadSerializer(source='actividades_jornada', many=True, read_only=True)
+    actividades_campo = serializers.SerializerMethodField()
     rol_codigo = serializers.ReadOnlyField(source='usuario.rol.codigo')
     rol_nombre = serializers.ReadOnlyField(source='usuario.rol.nombre')
 
@@ -219,6 +230,10 @@ class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
             sede = Sede.objects.filter(id=obj.sede_id).first()
             return sede.nombre if sede else f"Sede {obj.sede_id}"
         return "-"
+
+    def get_actividades_campo(self, obj):
+        actividades = obj.actividades_jornada.all().order_by('hora_inicio_actividad')
+        return JornadaActividadSerializer(actividades, many=True, context=self.context).data
 
 
 class HorarioDetalleSerializer(serializers.ModelSerializer):

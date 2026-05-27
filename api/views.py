@@ -825,27 +825,52 @@ class SyncStatusView(APIView):
     def get(self, request, *args, **kwargs):
         user = request.user
         last_sync_str = request.query_params.get('last_sync')
-        
-        # Obtenemos los actualizado_at
-        user_ts = user.actualizado_at
-        
-        config = ConfiguracionTracking.objects.first()
-        config_ts = config.actualizado_at if config else None
-        
         today = timezone.now().date()
+        
+        # Recopilar marcas temporales de modelos que afectan a este usuario
+        timestamps = [user.actualizado_at]
+        
+        if user.sede:
+            timestamps.append(user.sede.actualizado_at)
+            
+        config = ConfiguracionTracking.objects.first()
+        if config and config.actualizado_at:
+            timestamps.append(config.actualizado_at)
+            
         asistencia = Asistencia.objects.filter(usuario=user, fecha=today).first()
-        asistencia_ts = asistencia.actualizado_at if asistencia else None
-        
-        # 4. Timestamp de la configuración de jornada de su sede
-        from .models import JornadaConfiguracion
-        dias_map = {0: 'lunes', 1: 'martes', 2: 'miercoles', 3: 'jueves', 4: 'viernes', 5: 'sabado', 6: 'domingo'}
-        day_name = dias_map[timezone.now().weekday()]
-        j_config = JornadaConfiguracion.objects.filter(sede=user.sede, dia_semana=day_name).first()
-        jornada_ts = j_config.actualizado_at if j_config else None
-        
+        if asistencia and asistencia.actualizado_at:
+            timestamps.append(asistencia.actualizado_at)
+            
+        # Configuración de jornada de su sede (para cualquier día de la semana)
+        if user.sede:
+            jc = JornadaConfiguracion.objects.filter(sede=user.sede, activo=True).order_by('-actualizado_at').first()
+            if jc and jc.actualizado_at:
+                timestamps.append(jc.actualizado_at)
+                
+        # Asignación de horario directo (UsuarioHorario)
+        uh = UsuarioHorario.objects.filter(usuario=user, activo=True).order_by('-actualizado_at').first()
+        if uh and uh.actualizado_at:
+            timestamps.append(uh.actualizado_at)
+            
+        # Detalles del horario asignado (Horario y HorarioDetalle)
+        if uh and uh.horario:
+            if uh.horario.actualizado_at:
+                timestamps.append(uh.horario.actualizado_at)
+            hd = HorarioDetalle.objects.filter(horario=uh.horario, activo=True).order_by('-actualizado_at').first()
+            if hd and hd.actualizado_at:
+                timestamps.append(hd.actualizado_at)
+                
+        # Intercambios/extensiones de horario (IntercambioHorario)
+        intc = IntercambioHorario.objects.filter(
+            Q(usuario_solicitante=user) | Q(usuario_reemplazo=user),
+            activo=True
+        ).order_by('-actualizado_at').first()
+        if intc and intc.actualizado_at:
+            timestamps.append(intc.actualizado_at)
+            
         # Encontramos el máximo de los timestamps válidos
-        timestamps = [ts for ts in [user_ts, config_ts, asistencia_ts, jornada_ts] if ts is not None]
-        max_ts = max(timestamps) if timestamps else timezone.now()
+        valid_timestamps = [ts for ts in timestamps if ts is not None]
+        max_ts = max(valid_timestamps) if valid_timestamps else timezone.now()
         
         has_changes = False
         if last_sync_str:
@@ -1612,7 +1637,11 @@ class JornadaActividadViewSet(viewsets.ModelViewSet):
         actividad.observacion = request.data.get('observacion')
         actividad.latitud_fin = request.data.get('latitud_fin')
         actividad.longitud_fin = request.data.get('longitud_fin')
-        actividad.evidencia_fin_url = request.data.get('evidencia_fin_url')
+        evidencia_fin = request.data.get('evidencia_fin_url')
+        if evidencia_fin in [None, '', 'null']:
+            actividad.evidencia_fin_url = None
+        else:
+            actividad.evidencia_fin_url = evidencia_fin
         actividad.dispositivo_fin = request.data.get('dispositivo_fin')
         actividad.hora_fin_actividad = timezone.now()
         actividad.estado_actividad = 'finalizada'

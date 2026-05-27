@@ -326,13 +326,13 @@ class JornadaActividad(models.Model):
     
     latitud_inicio = models.DecimalField(max_digits=10, decimal_places=8)
     longitud_inicio = models.DecimalField(max_digits=11, decimal_places=8)
-    evidencia_inicio_url = models.TextField(null=True, blank=True)
+    evidencia_inicio_url = models.ImageField(upload_to='actividades/', null=True, blank=True)
     dispositivo_inicio = models.TextField(null=True, blank=True)
     hora_inicio_actividad = models.DateTimeField(auto_now_add=True)
     
     latitud_fin = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)
     longitud_fin = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
-    evidencia_fin_url = models.TextField(null=True, blank=True)
+    evidencia_fin_url = models.ImageField(upload_to='actividades/', null=True, blank=True)
     dispositivo_fin = models.TextField(null=True, blank=True)
     hora_fin_actividad = models.DateTimeField(null=True, blank=True)
     

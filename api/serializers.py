@@ -163,7 +163,15 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             from .models import Usuario
             try:
                 user = Usuario.objects.select_related('rol').get(dni=attrs['username'])
-                if not user.rol or user.rol.nombre.lower() not in ['operador', 'asesor']:
+                # Validar por codigo (campo normalizado) Y por nombre (fallback),
+                # en minúsculas para evitar errores de capitalización
+                rol_codigo = (user.rol.codigo or '').lower() if user.rol else ''
+                rol_nombre = (user.rol.nombre or '').lower() if user.rol else ''
+                es_movil_permitido = (
+                    rol_codigo in ['operador', 'asesor'] or
+                    rol_nombre in ['operador', 'asesor']
+                )
+                if not user.rol or not es_movil_permitido:
                     raise serializers.ValidationError({"detail": "Acceso denegado. Solo los operadores y asesores pueden usar la app móvil."})
             except Usuario.DoesNotExist:
                 raise serializers.ValidationError({"detail": "Usuario no encontrado."})

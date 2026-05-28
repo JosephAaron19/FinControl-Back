@@ -6,8 +6,8 @@ import sys
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'fincontrol_backend.settings')
 django.setup()
 
-from django.test import RequestFactory
 from django.contrib.auth import get_user_model
+from rest_framework.test import APIRequestFactory, force_authenticate
 from api.models import HistorialJornada, UbicacionPunto
 from api.views import JourneyTrackingRecorridoJornadaView
 
@@ -31,9 +31,9 @@ def run_test():
         return
 
     # Setup request factory
-    factory = RequestFactory()
+    factory = APIRequestFactory()
     request = factory.get(f'/api/tracking/recorrido-jornada/{historial.id}/')
-    request.user = user
+    force_authenticate(request, user=user)
     
     # Instantiate view
     view = JourneyTrackingRecorridoJornadaView.as_view()

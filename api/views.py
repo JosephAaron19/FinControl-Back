@@ -729,13 +729,20 @@ class UsuarioViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         try:
             user = self.request.user
-            rol_nombre = user.rol.nombre.lower() if user.rol else ''
+            rol_nombre = (user.rol.nombre or '').lower() if user.rol else ''
+            rol_codigo = (user.rol.codigo or '').lower() if user.rol else ''
             
-            if 'gerente' in rol_nombre or 'supervisor' in rol_nombre:
+            is_manager = 'gerente' in rol_nombre or 'gerente' in rol_codigo or \
+                         'supervisor' in rol_nombre or 'supervisor' in rol_codigo
+            
+            if is_manager:
                 # Validar rol permitido
                 target_rol_id = self.request.data.get('rol')
                 target_rol = Rol.objects.filter(id=target_rol_id).first()
-                if not target_rol or target_rol.nombre.lower() not in ['operador', 'asesor']:
+                target_rol_nombre = (target_rol.nombre or '').lower() if target_rol else ''
+                target_rol_codigo = (target_rol.codigo or '').lower() if target_rol else ''
+                
+                if not target_rol or (target_rol_nombre not in ['operador', 'asesor'] and target_rol_codigo not in ['operador', 'asesor']):
                     from rest_framework.exceptions import ValidationError
                     raise ValidationError({'rol': 'Solo puede crear usuarios con rol Operador o Asesor.'})
                 
@@ -744,10 +751,9 @@ class UsuarioViewSet(viewsets.ModelViewSet):
                 sedes_gestionables = get_authorized_sedes_ids(user)
                     
                 try:
-                        # Validar si la sede está en sus gestionables
-                        if sedes_gestionables is not None and int(target_sede_id) not in sedes_gestionables:
-                            from rest_framework.exceptions import ValidationError
-                            raise ValidationError({'sede': 'No tiene permisos para asignar esta sede.'})
+                    if sedes_gestionables is not None and int(target_sede_id) not in sedes_gestionables:
+                        from rest_framework.exceptions import ValidationError
+                        raise ValidationError({'sede': 'No tiene permisos para asignar esta sede.'})
                 except (ValueError, TypeError):
                     from rest_framework.exceptions import ValidationError
                     raise ValidationError({'sede': 'Sede no válida.'})
@@ -758,15 +764,82 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             print(traceback.format_exc())
             raise e
 
+    def perform_update(self, serializer):
+        try:
+            user = self.request.user
+            rol_nombre = (user.rol.nombre or '').lower() if user.rol else ''
+            rol_codigo = (user.rol.codigo or '').lower() if user.rol else ''
+            
+            is_manager = 'gerente' in rol_nombre or 'gerente' in rol_codigo or \
+                         'supervisor' in rol_nombre or 'supervisor' in rol_codigo
+            
+            if is_manager:
+                # Validar rol permitido si se está editando
+                target_rol_id = self.request.data.get('rol')
+                if target_rol_id:
+                    target_rol = Rol.objects.filter(id=target_rol_id).first()
+                    target_rol_nombre = (target_rol.nombre or '').lower() if target_rol else ''
+                    target_rol_codigo = (target_rol.codigo or '').lower() if target_rol else ''
+                    
+                    if not target_rol or (target_rol_nombre not in ['operador', 'asesor'] and target_rol_codigo not in ['operador', 'asesor']):
+                        from rest_framework.exceptions import ValidationError
+                        raise ValidationError({'rol': 'Solo puede asignar rol Operador o Asesor.'})
+                
+                # Validar Sede si se está editando
+                target_sede_id = self.request.data.get('sede')
+                if target_sede_id:
+                    sedes_gestionables = get_authorized_sedes_ids(user)
+                    try:
+                        if sedes_gestionables is not None and int(target_sede_id) not in sedes_gestionables:
+                            from rest_framework.exceptions import ValidationError
+                            raise ValidationError({'sede': 'No tiene permisos para asignar esta sede.'})
+                    except (ValueError, TypeError):
+                        from rest_framework.exceptions import ValidationError
+                        raise ValidationError({'sede': 'Sede no válida.'})
+
+            serializer.save()
+        except Exception as e:
+            import traceback
+            print(traceback.format_exc())
+            raise e
+
     @action(detail=True, methods=['post'], url_path='change-password')
     def change_password(self, request, pk=None):
-        usuario = self.get_object()
-        new_password = self.request.data.get('password')
+        from django.shortcuts import get_object_or_404
+        requesting_user = request.user
+        rol_nombre = requesting_user.rol.nombre.lower() if requesting_user.rol else ''
+        rol_codigo = (requesting_user.rol.codigo or '').lower() if requesting_user.rol else ''
+
+        # Superadmin/Admin puede cambiar cualquier contraseña
+        if any(r in rol_nombre for r in ['admin', 'superadmin', 'super administrador']) or \
+           any(r in rol_codigo for r in ['admin', 'superadmin']):
+            usuario = get_object_or_404(Usuario, pk=pk)
+        elif 'gerente' in rol_nombre or 'gerente' in rol_codigo or \
+             'supervisor' in rol_nombre or 'supervisor' in rol_codigo:
+            # Gerente/Supervisor: puede cambiar contraseña de cualquier usuario de sus sedes
+            sedes_ids = get_authorized_sedes_ids(requesting_user)
+            if sedes_ids is None:
+                # Gerente sin sedes asignadas aún — permitir sobre usuarios que él creó
+                usuario = get_object_or_404(Usuario, pk=pk, creado_por=requesting_user)
+            else:
+                # Buscar en sedes autorizadas (sin restricción de rol del target)
+                usuario = get_object_or_404(Usuario, pk=pk, sede_id__in=sedes_ids)
+        else:
+            # Operador/Asesor: solo puede cambiar su propia contraseña
+            if str(pk) != str(requesting_user.pk):
+                return Response(
+                    {'error': 'No tiene permisos para cambiar la contraseña de este usuario.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            usuario = requesting_user
+
+        new_password = request.data.get('password')
         if not new_password:
             return Response({'error': 'La contraseña es requerida.'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         usuario.set_password(new_password)
-        usuario.debe_cambiar_password = self.request.data.get('debe_cambiar_password', True)
+        # Por defecto False: si alguien cambia intencionalmente la contraseña, no forzar otro cambio
+        usuario.debe_cambiar_password = request.data.get('debe_cambiar_password', False)
         usuario.save()
         return Response({'status': 'Contraseña actualizada correctamente.'})
 
@@ -1039,7 +1112,10 @@ class JornadaEstadoMarcacionView(APIView):
         puede_finalizar_actividad = False
         actividad_en_proceso = None
         
-        if user.rol and user.rol.nombre.lower() == 'asesor':
+        if user.rol and (
+            user.rol.nombre.lower() == 'asesor' or
+            (user.rol.codigo or '').lower() == 'asesor'
+        ):
             if asistencia and asistencia.hora_entrada and not asistencia.hora_salida:
                 actividad = JornadaActividad.objects.filter(usuario=user, estado_actividad='en_proceso').first()
                 if actividad:

@@ -9,7 +9,8 @@ from .views import (
     IncidenciaListView, AsistenciaListView, ActividadHoyView, ActividadDetalleUsuarioView,
     JornadaEstadoMarcacionView, JornadaConfiguracionViewSet, HistorialJornadaListView,
     HistorialJornadaDetalleView, JornadaActividadViewSet, JourneyTrackingMapView, JourneyTrackingRecorridoJornadaView,
-    HorarioViewSet, UsuarioHorarioViewSet, IntercambioHorarioViewSet, SedesResumenView, DashboardResumenView
+    HorarioViewSet, UsuarioHorarioViewSet, IntercambioHorarioViewSet, SedesResumenView, DashboardResumenView,
+    DatabaseConnectionCheckView
 )
 
 router = DefaultRouter()
@@ -26,6 +27,7 @@ urlpatterns = [
     path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/profile/', UserProfileView.as_view(), name='user_profile'),
     path('sync/', SyncStatusView.as_view(), name='sync_status'),
+    path('db-check/', DatabaseConnectionCheckView.as_view(), name='db_check'),
     
     # Attendance
     path('attendance/event/', AttendanceEventView.as_view(), name='attendance_event'),

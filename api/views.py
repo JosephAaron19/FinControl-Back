@@ -2586,3 +2586,33 @@ class DashboardResumenView(APIView):
 
         return Response(resumen_data, status=status.HTTP_200_OK)
 
+
+class DatabaseConnectionCheckView(APIView):
+    permission_classes = []
+
+    def get(self, request):
+        from django.db import connection
+        from django.db.utils import OperationalError
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                row = cursor.fetchone()
+                if row is None:
+                    raise OperationalError("No response from database query.")
+            return Response({
+                "status": "connected",
+                "database": connection.settings_dict.get('NAME'),
+                "message": "Conexión exitosa con la base de datos."
+            }, status=status.HTTP_200_OK)
+        except OperationalError as e:
+            return Response({
+                "status": "disconnected",
+                "message": "Error al conectar con la base de datos.",
+                "details": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            return Response({
+                "status": "error",
+                "message": "Ocurrió un error inesperado al verificar la conexión.",
+                "details": str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

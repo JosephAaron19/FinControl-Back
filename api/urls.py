@@ -10,7 +10,7 @@ from .views import (
     JornadaEstadoMarcacionView, JornadaConfiguracionViewSet, HistorialJornadaListView,
     HistorialJornadaDetalleView, JornadaActividadViewSet, JourneyTrackingMapView, JourneyTrackingRecorridoJornadaView,
     HorarioViewSet, UsuarioHorarioViewSet, IntercambioHorarioViewSet, SedesResumenView, DashboardResumenView,
-    DatabaseConnectionCheckView
+    DatabaseConnectionCheckView, HistorialSedesResumenView
 )
 
 router = DefaultRouter()
@@ -50,6 +50,7 @@ urlpatterns = [
     path('roles/', RolListView.as_view(), name='rol_list'),
     path('tipos-incidencia/', TipoIncidenciaListView.as_view(), name='tipo_incidencia_list'),
     path('sedes/resumen/', SedesResumenView.as_view(), name='sedes_resumen'),
+    path('sedes/historial-resumen/', HistorialSedesResumenView.as_view(), name='sedes_historial_resumen'),
     path('sedes/', SedeListCreateView.as_view(), name='sede_list_create'),
     path('sedes/<int:pk>/', SedeDetailView.as_view(), name='sede_detail'),
     path('incidencias/', IncidenciaListView.as_view(), name='incidencia_list'),

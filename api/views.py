@@ -2222,6 +2222,85 @@ class SedesResumenView(APIView):
         return Response(resumen, status=status.HTTP_200_OK)
 
 
+class HistorialSedesResumenView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        rol_nombre = user.rol.nombre.lower() if user.rol else ''
+        is_admin = any(role in rol_nombre for role in ['admin', 'superadmin', 'super administrador'])
+        is_gerente = any(role in rol_nombre for role in ['gerente', 'supervisor'])
+
+        if not is_admin and not is_gerente:
+            return Response({'error': 'No tiene permisos para ver esta información.'}, status=status.HTTP_403_FORBIDDEN)
+
+        authorized_sedes = get_authorized_sedes_ids(user)
+        if authorized_sedes is not None:
+            sedes = Sede.objects.filter(id__in=authorized_sedes, activo=True)
+        else:
+            sedes = Sede.objects.filter(activo=True)
+
+        fecha_inicio_param = request.query_params.get('fecha_inicio', None)
+        fecha_fin_param = request.query_params.get('fecha_fin', None)
+        
+        fecha_inicio = None
+        fecha_fin = None
+        
+        if fecha_inicio_param:
+            try:
+                fecha_inicio = timezone.datetime.strptime(fecha_inicio_param, '%Y-%m-%d').date()
+            except ValueError:
+                pass
+        if fecha_fin_param:
+            try:
+                fecha_fin = timezone.datetime.strptime(fecha_fin_param, '%Y-%m-%d').date()
+            except ValueError:
+                pass
+
+        resumen = []
+        for s in sedes:
+            usuarios_sede = Usuario.objects.filter(sede=s, activo=True)
+            cantidad_operadores = usuarios_sede.filter(rol__codigo__iexact='operador').count()
+            cantidad_asesores = usuarios_sede.filter(rol__codigo__iexact='asesor').count()
+            
+            jornadas_qs = HistorialJornada.objects.filter(sede_id=s.id)
+            if fecha_inicio and fecha_fin:
+                jornadas_qs = jornadas_qs.filter(fecha__range=(fecha_inicio, fecha_fin))
+            elif fecha_inicio:
+                jornadas_qs = jornadas_qs.filter(fecha__gte=fecha_inicio)
+            elif fecha_fin:
+                jornadas_qs = jornadas_qs.filter(fecha__lte=fecha_fin)
+                
+            jornadas_registradas = jornadas_qs.count()
+            jornadas_en_proceso = jornadas_qs.filter(estado_asistencia='en_proceso').count()
+            jornadas_completas = jornadas_qs.filter(estado_asistencia__in=['completa', 'completada']).count()
+            ausencias = jornadas_qs.filter(estado_asistencia='ausente').count()
+            
+            incidencias_qs = Incidencia.objects.filter(usuario__sede_id=s.id)
+            if fecha_inicio and fecha_fin:
+                incidencias_qs = incidencias_qs.filter(fecha_hora_reporte__date__range=(fecha_inicio, fecha_fin))
+            elif fecha_inicio:
+                incidencias_qs = incidencias_qs.filter(fecha_hora_reporte__date__gte=fecha_inicio)
+            elif fecha_fin:
+                incidencias_qs = incidencias_qs.filter(fecha_hora_reporte__date__lte=fecha_fin)
+                
+            incidencias = incidencias_qs.count()
+            
+            resumen.append({
+                'sede_id': s.id,
+                'sede_nombre': s.nombre,
+                'cantidad_operadores': cantidad_operadores,
+                'cantidad_asesores': cantidad_asesores,
+                'jornadas_registradas': jornadas_registradas,
+                'jornadas_en_proceso': jornadas_en_proceso,
+                'jornadas_completas': jornadas_completas,
+                'ausencias': ausencias,
+                'incidencias': incidencias
+            })
+            
+        return Response(resumen, status=status.HTTP_200_OK)
+
+
 class DashboardResumenView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -2237,6 +2316,7 @@ class DashboardResumenView(APIView):
         today = timezone.localdate() if timezone.is_aware(timezone.now()) else timezone.now().date()
         rango = request.query_params.get('rango', 'hoy').lower()
         sede_id = request.query_params.get('sede', None)
+        rol_param = request.query_params.get('rol', None)
 
         if rango == 'semana':
             fecha_inicio = today - timezone.timedelta(days=6)
@@ -2288,6 +2368,8 @@ class DashboardResumenView(APIView):
         usuarios_qs = Usuario.objects.all()
         if sedes_filter is not None:
             usuarios_qs = usuarios_qs.filter(sede_id__in=sedes_filter)
+        if rol_param:
+            usuarios_qs = usuarios_qs.filter(rol__codigo__iexact=rol_param)
 
         total_usuarios = usuarios_qs.count()
         total_operadores = usuarios_qs.filter(rol__codigo__iexact='operador').count()
@@ -2306,6 +2388,8 @@ class DashboardResumenView(APIView):
         jornadas_qs = HistorialJornada.objects.filter(fecha__range=(fecha_inicio, fecha_fin))
         if sedes_filter is not None:
             jornadas_qs = jornadas_qs.filter(sede_id__in=sedes_filter)
+        if rol_param:
+            jornadas_qs = jornadas_qs.filter(usuario__rol__codigo__iexact=rol_param)
 
         jornadas_programadas = jornadas_qs.filter(estado_asistencia='programada').count()
         jornadas_en_proceso = jornadas_qs.filter(estado_asistencia='en_proceso').count()
@@ -2331,10 +2415,14 @@ class DashboardResumenView(APIView):
         incidencias_qs = Incidencia.objects.filter(fecha_hora_reporte__date__range=(fecha_inicio, fecha_fin))
         if sedes_filter is not None:
             incidencias_qs = incidencias_qs.filter(usuario__sede_id__in=sedes_filter)
+        if rol_param:
+            incidencias_qs = incidencias_qs.filter(usuario__rol__codigo__iexact=rol_param)
 
         incidencias_hoy_qs = Incidencia.objects.filter(fecha_hora_reporte__date=today)
         if sedes_filter is not None:
             incidencias_hoy_qs = incidencias_hoy_qs.filter(usuario__sede_id__in=sedes_filter)
+        if rol_param:
+            incidencias_hoy_qs = incidencias_hoy_qs.filter(usuario__rol__codigo__iexact=rol_param)
 
         total_incidencias_hoy = incidencias_hoy_qs.count()
         incidencias_pendientes = incidencias_qs.filter(estado_revision__iexact='pendiente').count()
@@ -2352,10 +2440,14 @@ class DashboardResumenView(APIView):
         actividades_qs = JornadaActividad.objects.filter(hora_inicio_actividad__date__range=(fecha_inicio, fecha_fin))
         if sedes_filter is not None:
             actividades_qs = actividades_qs.filter(sede_id__in=sedes_filter)
+        if rol_param:
+            actividades_qs = actividades_qs.filter(usuario__rol__codigo__iexact=rol_param)
 
         actividades_hoy_qs = JornadaActividad.objects.filter(hora_inicio_actividad__date=today)
         if sedes_filter is not None:
             actividades_hoy_qs = actividades_hoy_qs.filter(sede_id__in=sedes_filter)
+        if rol_param:
+            actividades_hoy_qs = actividades_hoy_qs.filter(usuario__rol__codigo__iexact=rol_param)
 
         actividades_hoy = actividades_hoy_qs.count()
         actividades_en_proceso = actividades_qs.filter(estado_actividad='en_proceso').count()
@@ -2371,6 +2463,8 @@ class DashboardResumenView(APIView):
         gps_hoy_qs = UbicacionPunto.objects.filter(fecha_hora__date=today)
         if sedes_filter is not None:
             gps_hoy_qs = gps_hoy_qs.filter(usuario__sede_id__in=sedes_filter)
+        if rol_param:
+            gps_hoy_qs = gps_hoy_qs.filter(usuario__rol__codigo__iexact=rol_param)
 
         total_puntos_gps_hoy = gps_hoy_qs.count()
 
@@ -2378,6 +2472,8 @@ class DashboardResumenView(APIView):
         active_tracking_users = UbicacionPunto.objects.filter(fecha_hora__gte=fifteen_mins_ago)
         if sedes_filter is not None:
             active_tracking_users = active_tracking_users.filter(usuario__sede_id__in=sedes_filter)
+        if rol_param:
+            active_tracking_users = active_tracking_users.filter(usuario__rol__codigo__iexact=rol_param)
         usuarios_con_tracking_activo = active_tracking_users.values('usuario').distinct().count()
 
         usuarios_fuera_de_zona = gps_hoy_qs.filter(es_fuera_de_zona=True).values('usuario').distinct().count()
@@ -2451,21 +2547,29 @@ class DashboardResumenView(APIView):
         eventos_qs = AsistenciaEvento.objects.select_related('usuario', 'usuario__rol', 'usuario__sede').all()
         if sedes_filter is not None:
             eventos_qs = eventos_qs.filter(usuario__sede_id__in=sedes_filter)
+        if rol_param:
+            eventos_qs = eventos_qs.filter(usuario__rol__codigo__iexact=rol_param)
         eventos_recent = eventos_qs.order_by('-fecha_hora')[:15]
 
         incidencias_recent_qs = Incidencia.objects.select_related('usuario', 'usuario__rol', 'usuario__sede').all()
         if sedes_filter is not None:
             incidencias_recent_qs = incidencias_recent_qs.filter(usuario__sede_id__in=sedes_filter)
+        if rol_param:
+            incidencias_recent_qs = incidencias_recent_qs.filter(usuario__rol__codigo__iexact=rol_param)
         incidencias_recent = incidencias_recent_qs.order_by('-fecha_hora_reporte')[:15]
 
         actividades_recent_qs = JornadaActividad.objects.select_related('usuario', 'usuario__rol', 'sede').all()
         if sedes_filter is not None:
             actividades_recent_qs = actividades_recent_qs.filter(sede_id__in=sedes_filter)
+        if rol_param:
+            actividades_recent_qs = actividades_recent_qs.filter(usuario__rol__codigo__iexact=rol_param)
         actividades_recent = actividades_recent_qs.order_by('-hora_inicio_actividad')[:15]
 
         fuera_recent_qs = UbicacionPunto.objects.filter(es_fuera_de_zona=True).select_related('usuario', 'usuario__rol', 'usuario__sede').all()
         if sedes_filter is not None:
             fuera_recent_qs = fuera_recent_qs.filter(usuario__sede_id__in=sedes_filter)
+        if rol_param:
+            fuera_recent_qs = fuera_recent_qs.filter(usuario__rol__codigo__iexact=rol_param)
         fuera_recent = fuera_recent_qs.order_by('-fecha_hora')[:15]
 
         unified_events = []

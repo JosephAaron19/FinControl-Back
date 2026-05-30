@@ -148,6 +148,9 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         # Mapear 'dni' a 'username' si viene en la petición
         if 'dni' in attrs and not attrs.get('username'):
             attrs['username'] = attrs['dni']
+        # Mapear 'username' a 'dni' si viene en la petición (ej. desde clientes genéricos de API)
+        if 'username' in attrs and not attrs.get('dni'):
+            attrs['dni'] = attrs['username']
             
         origen = attrs.get('origen')
         
@@ -218,7 +221,7 @@ class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
     sede = serializers.SerializerMethodField()
     eventos = AsistenciaEventoSerializer(source='asistencia.eventos', many=True, read_only=True)
     incidencias = IncidenciaSerializer(source='asistencia.incidencias_detalle', many=True, read_only=True)
-    puntos_gps = UbicacionPuntoSerializer(source='asistencia.puntos_gps', many=True, read_only=True)
+    total_puntos_gps = serializers.SerializerMethodField()
     actividades_campo = serializers.SerializerMethodField()
     rol_codigo = serializers.ReadOnlyField(source='usuario.rol.codigo')
     rol_nombre = serializers.ReadOnlyField(source='usuario.rol.nombre')
@@ -229,9 +232,14 @@ class HistorialJornadaDetailSerializer(serializers.ModelSerializer):
             'id', 'operador', 'sede', 'fecha', 'hora_entrada', 'hora_inicio_break', 
             'hora_fin_break', 'hora_salida', 'total_tiempo_break', 'total_horas_trabajadas', 
             'estado_jornada', 'cerrado', 'cerrado_at', 'observacion',
-            'eventos', 'incidencias', 'puntos_gps', 'actividades_campo',
+            'eventos', 'incidencias', 'total_puntos_gps', 'actividades_campo',
             'rol_codigo', 'rol_nombre', 'estado_asistencia', 'estado_puntualidad', 'estado_salida'
         ]
+
+    def get_total_puntos_gps(self, obj):
+        if obj.asistencia:
+            return obj.asistencia.puntos_gps.filter(latitud__isnull=False, longitud__isnull=False).count()
+        return 0
 
     def get_sede(self, obj):
         if obj.sede_id:

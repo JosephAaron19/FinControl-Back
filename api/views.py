@@ -1255,13 +1255,28 @@ class JourneyTrackingRecorridoJornadaView(APIView):
                 longitud__isnull=False
             ).order_by('fecha_hora')
 
-        puntos_data = []
+        puntos_list = list(puntos)
+        total_puntos = len(puntos_list)
         total_fuera_de_zona = 0
-        
-        for p in puntos:
+
+        for p in puntos_list:
             if p.es_fuera_de_zona:
                 total_fuera_de_zona += 1
-                
+
+        # Algoritmo de downsampling si superamos 300 puntos
+        if total_puntos > 300:
+            step = total_puntos // 150
+            if step < 2:
+                step = 2
+            puntos_procesar = []
+            for idx, p in enumerate(puntos_list):
+                if idx == 0 or idx == total_puntos - 1 or p.es_fuera_de_zona or (idx % step == 0):
+                    puntos_procesar.append(p)
+        else:
+            puntos_procesar = puntos_list
+
+        puntos_data = []
+        for p in puntos_procesar:
             puntos_data.append({
                 'id': p.id,
                 'latitud': float(p.latitud),

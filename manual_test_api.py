@@ -11,7 +11,7 @@ def test_flow():
     # 1. Probar Login
     print("\n1. Probando Login...")
     login_res = requests.post(f"{BASE_URL}/auth/login/", json={"dni": DNI, "password": PASSWORD})
-    if login_res.statusCode != 200:
+    if login_res.status_code != 200:
         print(f"Error en Login: {login_res.text}")
         return
     token = login_res.json()['access']
@@ -21,7 +21,7 @@ def test_flow():
     # 2. Probar Configuración de Tracking
     print("\n2. Consultando Configuración de Tracking...")
     config_res = requests.get(f"{BASE_URL}/configuracion-tracking/", headers=headers)
-    if config_res.statusCode == 200:
+    if config_res.status_code == 200:
         print(f"OK: Configuración recibida -> {config_res.json()}")
     else:
         print(f"Error en Configuración: {config_res.text}")
@@ -35,7 +35,7 @@ def test_flow():
         "device_info": "Script de Prueba"
     }
     entry_res = requests.post(f"{BASE_URL}/attendance/event/", json=entry_data, headers=headers)
-    if entry_res.statusCode == 200:
+    if entry_res.status_code == 200:
         res_data = entry_res.json()
         asistencia_id = res_data.get('asistencia_id')
         print(f"OK: Entrada marcada. Asistencia ID: {asistencia_id}")
@@ -52,7 +52,7 @@ def test_flow():
             "origen": "Prueba de Integración"
         }
         point_res = requests.post(f"{BASE_URL}/ubicacion-puntos/", json=point_data, headers=headers)
-        if point_res.statusCode == 201:
+        if point_res.status_code == 201:
             print(f"OK: Punto GPS registrado correctamente.")
         else:
             print(f"Error al enviar punto GPS: {point_res.text}")

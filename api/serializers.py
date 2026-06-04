@@ -35,7 +35,7 @@ class UsuarioSerializer(serializers.ModelSerializer):
     sedes_ids = serializers.SerializerMethodField()
     class Meta:
         model = Usuario
-        fields = ('id', 'dni', 'nombre_completo', 'cargo', 'telefono', 'email', 'sede', 'rol', 'sede_info', 'rol_info', 'is_active', 'activo', 'debe_cambiar_password', 'observacion', 'sedes_ids')
+        fields = ('id', 'dni', 'nombre_completo', 'cargo', 'telefono', 'email', 'sede', 'rol', 'sede_info', 'rol_info', 'is_active', 'activo', 'debe_cambiar_password', 'observacion', 'sedes_ids', 'creado_at')
 
     def get_sedes_ids(self, obj):
         return list(obj.sedes_asignadas.values_list('sede_id', flat=True))

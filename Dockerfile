@@ -25,12 +25,15 @@ RUN pip install --upgrade pip && \
 # Copiar el código del proyecto al contenedor
 COPY . /app/
 
-# Crear directorio media con permisos adecuados
-RUN mkdir -p /app/media && chmod 755 /app/media
+# Crear directorios media y staticfiles con permisos adecuados
+RUN mkdir -p /app/media /app/staticfiles && chmod -R 775 /app/media /app/staticfiles
 
-# Crear un usuario no-root para mayor seguridad
-RUN adduser --disabled-password --no-create-home djangouser && \
-    chown -R djangouser:djangouser /app
+# Crear grupo y usuario djangouser con UID/GID 1000 explícitos para mapear con el host
+RUN groupadd -g 1000 djangouser && \
+    useradd -u 1000 -g djangouser -d /app -s /sbin/nologin djangouser
+
+# Asegurar que djangouser sea dueño del directorio de la aplicación
+RUN chown -R djangouser:djangouser /app
 
 USER djangouser
 

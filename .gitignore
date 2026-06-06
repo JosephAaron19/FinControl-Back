@@ -5,3 +5,4 @@ venv/
 media/
 __pycache__/
 *.pyc
+config/firebase-service-account.json

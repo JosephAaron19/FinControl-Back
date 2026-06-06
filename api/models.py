@@ -111,6 +111,7 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     is_staff = models.BooleanField(default=False)
     creado_at = models.DateTimeField(auto_now_add=True)
     actualizado_at = models.DateTimeField(auto_now=True)
+    fcm = models.TextField(null=True, blank=True)
 
     objects = UsuarioManager()
 
@@ -442,3 +443,24 @@ class IntercambioHorario(models.Model):
 
     def __str__(self):
         return f"{self.usuario_solicitante.nombre_completo} <-> {self.usuario_reemplazo.nombre_completo} ({self.fecha_intercambio})"
+
+class NotificacionPush(models.Model):
+    usuario = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='notificaciones_push')
+    fcm_token = models.TextField()
+    titulo = models.CharField(max_length=255)
+    mensaje = models.TextField()
+    tipo = models.CharField(max_length=100, null=True, blank=True)
+    payload = models.TextField(null=True, blank=True)
+    estado = models.CharField(max_length=50, default='PENDIENTE')
+    error = models.TextField(null=True, blank=True)
+    fecha_envio = models.DateTimeField(null=True, blank=True)
+    creado_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'notificaciones_push'
+        verbose_name = 'Notificación Push'
+        verbose_name_plural = 'Notificaciones Push'
+
+    def __str__(self):
+        return f"Notificación a {self.usuario.nombre_completo} - {self.estado}"
+

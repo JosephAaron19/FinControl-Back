@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views import (
     AttendanceEventView, AttendanceHistoryView, IncidentCreateView, 
-    UserProfileView, CustomTokenObtainPairView, TrackingConfigView,
+    UserProfileView, UserFCMUpdateView, CustomTokenObtainPairView, TrackingConfigView,
     LocationPointCreateView, JourneyTrackingHistoryView, SyncStatusView,
     RolListView, TipoIncidenciaListView, SedeListCreateView, SedeDetailView, UsuarioViewSet,
     IncidenciaListView, AsistenciaListView, ActividadHoyView, ActividadDetalleUsuarioView,
@@ -26,6 +26,7 @@ urlpatterns = [
     path('auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/profile/', UserProfileView.as_view(), name='user_profile'),
+    path('users/me/fcm/', UserFCMUpdateView.as_view(), name='user_fcm_update'),
     path('sync/', SyncStatusView.as_view(), name='sync_status'),
     path('db-check/', DatabaseConnectionCheckView.as_view(), name='db_check'),
     

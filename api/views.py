@@ -626,6 +626,22 @@ class UserProfileView(generics.RetrieveAPIView):
     def get_object(self):
         return self.request.user
 
+class UserFCMUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, *args, **kwargs):
+        fcm_token = request.data.get('fcm')
+        if not fcm_token or str(fcm_token).strip() == '':
+            return Response({'error': 'El token FCM es requerido'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        user = request.user
+        user.fcm = fcm_token
+        user.save(update_fields=['fcm'])
+        return Response({
+            'message': 'Token FCM actualizado correctamente',
+            'user_id': user.id
+        }, status=status.HTTP_200_OK)
+
 # Web Dashboard Views
 class RolListView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]

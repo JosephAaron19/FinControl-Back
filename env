@@ -1,0 +1,8 @@
+DB_NAME=fincontrol
+DB_USER=safadmin
+DB_PASSWORD=R7!mQ4#zLp9@X
+DB_HOST=76.13.172.55
+DB_PORT=5435
+SECRET_KEY=django-insecure-jarx%tnz8*q+p6-#l*a%r(-h*zdr1$@6m4=(=^+&p749wyi2hy
+DEBUG=True
+ALLOWED_HOSTS=localhost,127.0.0.1,web,127.0.0.1:8088

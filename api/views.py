@@ -9,9 +9,9 @@ from django.utils import timezone
 from zoneinfo import ZoneInfo
 from django.db import transaction, models
 from django.db.models import Q
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede, HistorialJornada, JornadaActividad, Horario, HorarioDetalle, UsuarioHorario, IntercambioHorario, JornadaConfiguracion
+from .models import SedeCentral, Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, UsuarioSede, HistorialJornada, JornadaActividad, Horario, HorarioDetalle, UsuarioHorario, IntercambioHorario, JornadaConfiguracion
 from .serializers import (
-    SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
+    SedeCentralSerializer, SedeCentralDetailSerializer, SedeSerializer, UsuarioSerializer, UsuarioCreateUpdateSerializer, AsistenciaSerializer, 
     IncidenciaSerializer, CustomTokenObtainPairSerializer,
     ConfiguracionTrackingSerializer, UbicacionPuntoSerializer,
     RolSerializer, TipoIncidenciaSerializer, JornadaConfiguracionSerializer,
@@ -703,6 +703,60 @@ class SedeDetailView(generics.RetrieveUpdateDestroyAPIView):
             return Sede.objects.none()
             
         return Sede.objects.none()
+
+class SedeCentralListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = SedeCentralSerializer
+    queryset = SedeCentral.objects.all().order_by('id')
+
+class SedeCentralDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = SedeCentralDetailSerializer
+    queryset = SedeCentral.objects.all()
+
+    def perform_destroy(self, instance):
+        instance.estado = False
+        instance.save()
+
+class SedesDisponiblesParaCentralView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = SedeSerializer
+
+    def get_queryset(self):
+        return Sede.objects.filter(sede_central__isnull=True).order_by('nombre')
+
+class SedeCentralAgregarSedesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk, *args, **kwargs):
+        from django.shortcuts import get_object_or_404
+        sede_central = get_object_or_404(SedeCentral, pk=pk)
+        if not sede_central.estado:
+            return Response({'error': 'La sede central está inactiva.'}, status=status.HTTP_400_BAD_REQUEST)
+        sedes_ids = request.data.get('sedes_ids', [])
+        if not isinstance(sedes_ids, list):
+            return Response({'error': 'sedes_ids debe ser una lista.'}, status=status.HTTP_400_BAD_REQUEST)
+        sedes = Sede.objects.filter(id__in=sedes_ids)
+        sedes.update(sede_central=sede_central)
+        return Response({
+            'message': 'Sedes asociadas correctamente',
+            'sede_central_id': sede_central.id,
+            'sedes_asociadas': list(sedes.values_list('id', flat=True))
+        })
+
+class SedeCentralQuitarSedeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk, *args, **kwargs):
+        from django.shortcuts import get_object_or_404
+        sede_central = get_object_or_404(SedeCentral, pk=pk)
+        sede_id = request.data.get('sede_id')
+        if not sede_id:
+            return Response({'error': 'sede_id es requerido.'}, status=status.HTTP_400_BAD_REQUEST)
+        sede = get_object_or_404(Sede, pk=sede_id, sede_central=sede_central)
+        sede.sede_central = None
+        sede.save(update_fields=['sede_central'])
+        return Response({'message': 'Sede quitada de la sede central correctamente'})
 
 class UsuarioViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -2265,6 +2319,78 @@ class SedesResumenView(APIView):
             })
             
         return Response(resumen, status=status.HTTP_200_OK)
+
+
+class GestionJornadaSedesAgrupadasView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        sedes_ids = get_authorized_sedes_ids(user)
+        
+        if sedes_ids is not None:
+            sedes = Sede.objects.filter(id__in=sedes_ids, activo=True)
+        else:
+            sedes = Sede.objects.filter(activo=True)
+            
+        centrales_dict = {}
+        sin_asignar_list = []
+
+        # Obtener Sede Centrales activas para pre-crear agrupaciones
+        centrales_activas = SedeCentral.objects.filter(estado=True).order_by('id')
+        for c in centrales_activas:
+            centrales_dict[c.id] = {
+                'id': c.id,
+                'nombre': c.nombre,
+                'descripcion': c.descripcion,
+                'estado': c.estado,
+                'total_sedes': 0,
+                'sedes': []
+            }
+            
+        for s in sedes:
+            horarios_creados = Horario.objects.filter(sede=s, activo=True).count()
+            usuarios_sede = Usuario.objects.filter(sede=s, activo=True)
+            usuarios_con_horario = UsuarioHorario.objects.filter(
+                usuario__in=usuarios_sede, 
+                activo=True, 
+                es_principal=True
+            ).values_list('usuario_id', flat=True).distinct().count()
+            
+            total_usuarios = usuarios_sede.count()
+            usuarios_sin_horario = max(0, total_usuarios - usuarios_con_horario)
+            intercambios_count = IntercambioHorario.objects.filter(sede=s, activo=True).count()
+            
+            sede_data = {
+                'sede_id': s.id,
+                'sede_nombre': s.nombre,
+                'direccion': s.direccion,
+                'activo': s.activo,
+                'horarios_creados': horarios_creados,
+                'usuarios_con_horario': usuarios_con_horario,
+                'usuarios_sin_horario': usuarios_sin_horario,
+                'intercambios_count': intercambios_count
+            }
+
+            if s.sede_central_id and s.sede_central_id in centrales_dict:
+                centrales_dict[s.sede_central_id]['sedes'].append(sede_data)
+                centrales_dict[s.sede_central_id]['total_sedes'] += 1
+            else:
+                sin_asignar_list.append(sede_data)
+
+        resultado = list(centrales_dict.values())
+        
+        if sin_asignar_list:
+            resultado.append({
+                'id': None,
+                'nombre': 'Sin asignar',
+                'descripcion': 'Sedes que aún no pertenecen a una sede central.',
+                'estado': True,
+                'total_sedes': len(sin_asignar_list),
+                'sedes': sin_asignar_list
+            })
+
+        return Response(resultado, status=status.HTTP_200_OK)
 
 
 class HistorialSedesResumenView(APIView):

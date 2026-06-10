@@ -10,7 +10,10 @@ from .views import (
     JornadaEstadoMarcacionView, JornadaConfiguracionViewSet, HistorialJornadaListView,
     HistorialJornadaDetalleView, JornadaActividadViewSet, JourneyTrackingMapView, JourneyTrackingRecorridoJornadaView,
     HorarioViewSet, UsuarioHorarioViewSet, IntercambioHorarioViewSet, SedesResumenView, DashboardResumenView,
-    DatabaseConnectionCheckView, HistorialSedesResumenView
+    DatabaseConnectionCheckView, HistorialSedesResumenView,
+    SedeCentralListCreateView, SedeCentralDetailView, SedesDisponiblesParaCentralView,
+    SedeCentralAgregarSedesView, SedeCentralQuitarSedeView,
+    GestionJornadaSedesAgrupadasView
 )
 
 router = DefaultRouter()
@@ -36,6 +39,7 @@ urlpatterns = [
     path('jornada/estado-marcacion/', JornadaEstadoMarcacionView.as_view(), name='estado_marcacion'),
     path('historial-jornadas/', HistorialJornadaListView.as_view(), name='historial_jornadas'),
     path('historial-jornadas/<int:pk>/detalle/', HistorialJornadaDetalleView.as_view(), name='historial_jornada_detalle'),
+    path('gestion-jornada/sedes-agrupadas/', GestionJornadaSedesAgrupadasView.as_view(), name='gestion_jornada_sedes_agrupadas'),
     
     # Incidents
     path('incidents/create/', IncidentCreateView.as_view(), name='incident_create'),
@@ -54,6 +58,11 @@ urlpatterns = [
     path('sedes/historial-resumen/', HistorialSedesResumenView.as_view(), name='sedes_historial_resumen'),
     path('sedes/', SedeListCreateView.as_view(), name='sede_list_create'),
     path('sedes/<int:pk>/', SedeDetailView.as_view(), name='sede_detail'),
+    path('sedes-centrales/', SedeCentralListCreateView.as_view(), name='sede_central_list_create'),
+    path('sedes-centrales/<int:pk>/', SedeCentralDetailView.as_view(), name='sede_central_detail'),
+    path('sedes/disponibles-para-central/', SedesDisponiblesParaCentralView.as_view(), name='sedes_disponibles_central'),
+    path('sedes-centrales/<int:pk>/agregar-sedes/', SedeCentralAgregarSedesView.as_view(), name='sede_central_agregar_sedes'),
+    path('sedes-centrales/<int:pk>/quitar-sede/', SedeCentralQuitarSedeView.as_view(), name='sede_central_quitar_sede'),
     path('incidencias/', IncidenciaListView.as_view(), name='incidencia_list'),
     path('asistencias/', AsistenciaListView.as_view(), name='asistencia_list'),
     path('actividad/hoy/', ActividadHoyView.as_view(), name='actividad_hoy'),

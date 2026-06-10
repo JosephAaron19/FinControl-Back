@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion, HistorialJornada, JornadaActividad, Horario, HorarioDetalle, UsuarioHorario, IntercambioHorario
+from .models import SedeCentral, Sede, Usuario, Asistencia, Incidencia, AsistenciaEvento, ConfiguracionTracking, UbicacionPunto, Rol, TipoIncidencia, JornadaConfiguracion, HistorialJornada, JornadaActividad, Horario, HorarioDetalle, UsuarioHorario, IntercambioHorario
 
 class JornadaActividadSerializer(serializers.ModelSerializer):
     class Meta:
@@ -8,10 +8,41 @@ class JornadaActividadSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ('usuario', 'asistencia', 'historial_jornada', 'sede', 'hora_inicio_actividad', 'hora_fin_actividad', 'estado_actividad')
 
+class SedeCentralSerializer(serializers.ModelSerializer):
+    total_sedes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SedeCentral
+        fields = ['id', 'nombre', 'descripcion', 'estado', 'total_sedes', 'creado_at', 'actualizado_at']
+
+    def get_total_sedes(self, obj):
+        return obj.sedes.count()
+
+class SedeCentralDetailSerializer(serializers.ModelSerializer):
+    sedes = serializers.SerializerMethodField()
+    total_sedes = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SedeCentral
+        fields = ['id', 'nombre', 'descripcion', 'estado', 'total_sedes', 'sedes', 'creado_at', 'actualizado_at']
+
+    def get_total_sedes(self, obj):
+        return obj.sedes.count()
+
+    def get_sedes(self, obj):
+        return [{'id': s.id, 'nombre': s.nombre} for s in obj.sedes.all()]
+
 class SedeSerializer(serializers.ModelSerializer):
+    sede_central_nombre = serializers.SerializerMethodField()
+
     class Meta:
         model = Sede
         fields = '__all__'
+
+    def get_sede_central_nombre(self, obj):
+        if obj.sede_central:
+            return obj.sede_central.nombre
+        return "Sin asignar"
 
 class JornadaConfiguracionSerializer(serializers.ModelSerializer):
     class Meta:

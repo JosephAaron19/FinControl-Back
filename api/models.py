@@ -34,8 +34,25 @@ class TipoIncidencia(models.Model):
 
     def __str__(self):
         return self.nombre
+class SedeCentral(models.Model):
+    id = models.AutoField(primary_key=True)
+    nombre = models.CharField(max_length=100, unique=True)
+    descripcion = models.TextField(null=True, blank=True)
+    estado = models.BooleanField(default=True)
+    creado_at = models.DateTimeField(auto_now_add=True)
+    actualizado_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'sedes_centrales'
+        verbose_name = 'Sede Central'
+        verbose_name_plural = 'Sedes Centrales'
+
+    def __str__(self):
+        return self.nombre
+
 class Sede(models.Model):
     id = models.AutoField(primary_key=True)
+    sede_central = models.ForeignKey(SedeCentral, on_delete=models.SET_NULL, null=True, blank=True, related_name='sedes')
     nombre = models.CharField(max_length=100)
     direccion = models.TextField(null=True, blank=True)
     latitud = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)

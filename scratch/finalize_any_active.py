@@ -1,7 +1,7 @@
 import requests
 import json
 
-BASE_URL = "https://apifincontrol.finatech.com.pe/api"
+BASE_URL = "http://localhost:8001/api"
 DNI = "43084696"
 PASSWORD = "123"
 

@@ -10,27 +10,53 @@ class JornadaActividadSerializer(serializers.ModelSerializer):
 
 class SedeCentralSerializer(serializers.ModelSerializer):
     total_sedes = serializers.SerializerMethodField()
-
-    class Meta:
-        model = SedeCentral
-        fields = ['id', 'nombre', 'descripcion', 'estado', 'total_sedes', 'creado_at', 'actualizado_at']
-
-    def get_total_sedes(self, obj):
-        return obj.sedes.count()
-
-class SedeCentralDetailSerializer(serializers.ModelSerializer):
     sedes = serializers.SerializerMethodField()
-    total_sedes = serializers.SerializerMethodField()
+    imagen = serializers.ImageField(required=False, allow_null=True)
+    imagen_url = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    imagen_completa_url = serializers.SerializerMethodField()
 
     class Meta:
         model = SedeCentral
-        fields = ['id', 'nombre', 'descripcion', 'estado', 'total_sedes', 'sedes', 'creado_at', 'actualizado_at']
+        fields = ['id', 'nombre', 'descripcion', 'estado', 'total_sedes', 'sedes', 'imagen', 'imagen_url', 'imagen_completa_url', 'creado_at', 'actualizado_at']
 
     def get_total_sedes(self, obj):
         return obj.sedes.count()
 
     def get_sedes(self, obj):
         return [{'id': s.id, 'nombre': s.nombre} for s in obj.sedes.all()]
+
+    def get_imagen_completa_url(self, obj):
+        if obj.imagen:
+            request = self.context.get('request')
+            if request is not None:
+                return request.build_absolute_uri(obj.imagen.url)
+            return obj.imagen.url
+        return obj.imagen_url or None
+
+class SedeCentralDetailSerializer(serializers.ModelSerializer):
+    sedes = serializers.SerializerMethodField()
+    total_sedes = serializers.SerializerMethodField()
+    imagen = serializers.ImageField(required=False, allow_null=True)
+    imagen_url = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    imagen_completa_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SedeCentral
+        fields = ['id', 'nombre', 'descripcion', 'estado', 'total_sedes', 'sedes', 'imagen', 'imagen_url', 'imagen_completa_url', 'creado_at', 'actualizado_at']
+
+    def get_total_sedes(self, obj):
+        return obj.sedes.count()
+
+    def get_sedes(self, obj):
+        return [{'id': s.id, 'nombre': s.nombre} for s in obj.sedes.all()]
+
+    def get_imagen_completa_url(self, obj):
+        if obj.imagen:
+            request = self.context.get('request')
+            if request is not None:
+                return request.build_absolute_uri(obj.imagen.url)
+            return obj.imagen.url
+        return obj.imagen_url or None
 
 class SedeSerializer(serializers.ModelSerializer):
     sede_central_nombre = serializers.SerializerMethodField()

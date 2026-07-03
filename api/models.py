@@ -39,6 +39,8 @@ class SedeCentral(models.Model):
     nombre = models.CharField(max_length=100, unique=True)
     descripcion = models.TextField(null=True, blank=True)
     estado = models.BooleanField(default=True)
+    imagen = models.ImageField(upload_to='sedes_centrales/', null=True, blank=True)
+    imagen_url = models.TextField(null=True, blank=True)
     creado_at = models.DateTimeField(auto_now_add=True)
     actualizado_at = models.DateTimeField(auto_now=True)
 

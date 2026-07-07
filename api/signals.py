@@ -1,7 +1,7 @@
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.db.models import Q
-from .models import Asistencia, JornadaConfiguracion, HistorialJornada, JornadaActividad, UsuarioHorario, Horario, HorarioDetalle, IntercambioHorario
+from .models import Asistencia, JornadaConfiguracion, HistorialJornada, JornadaActividad, UsuarioHorario, Horario, HorarioDetalle, IntercambioHorario, Incidencia
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 
@@ -151,6 +151,21 @@ def notify_intercambio_horario_update(sender, instance, created, **kwargs):
                     f"Intercambio de horario {action}: {instance.usuario_reemplazo.nombre_completo}",
                     "config_update"
                 )
+    except Exception:
+        pass
+
+
+@receiver(post_save, sender=Incidencia)
+def notify_incident_update(sender, instance, created, **kwargs):
+    try:
+        if instance.usuario and instance.usuario.sede_id:
+            group_name = f"sede_{instance.usuario.sede_id}"
+            tipo_inc = instance.tipo_incidencia.nombre if instance.tipo_incidencia else "General"
+            send_ws_notification(
+                group_name,
+                f"Nueva incidencia reportada por {instance.usuario.nombre_completo}: {tipo_inc}",
+                "incident_update"
+            )
     except Exception:
         pass
 

@@ -2486,6 +2486,7 @@ class DashboardResumenView(APIView):
         today = timezone.localdate() if timezone.is_aware(timezone.now()) else timezone.now().date()
         rango = request.query_params.get('rango', 'hoy').lower()
         sede_id = request.query_params.get('sede', None)
+        sede_central_id = request.query_params.get('sede_central', None)
         rol_param = request.query_params.get('rol', None)
 
         if rango == 'semana':
@@ -2533,6 +2534,17 @@ class DashboardResumenView(APIView):
                     sedes_filter = None
             else:
                 sedes_filter = None
+
+        if sede_central_id:
+            try:
+                sc_id = int(sede_central_id)
+                central_sedes_ids = list(Sede.objects.filter(sede_central_id=sc_id, activo=True).values_list('id', flat=True))
+                if sedes_filter is not None:
+                    sedes_filter = [sid for sid in sedes_filter if sid in central_sedes_ids]
+                else:
+                    sedes_filter = central_sedes_ids
+            except ValueError:
+                pass
 
         # 1. Resumen general
         usuarios_qs = Usuario.objects.all()
@@ -2646,15 +2658,23 @@ class DashboardResumenView(APIView):
 
         fifteen_mins_ago = timezone.now() - timezone.timedelta(minutes=15)
 
+        # Bulk fetch active shifts today to check for users without signal
+        active_shifts_user_ids = set(HistorialJornada.objects.filter(
+            fecha=today, 
+            estado_asistencia='en_proceso'
+        ).values_list('usuario_id', flat=True))
+
+        # Bulk fetch latest GPS point for each user today (distinct on user)
+        latest_points = gps_hoy_qs.select_related('usuario').order_by('usuario', '-fecha_hora').distinct('usuario')
+        latest_points_map = {p.usuario_id: p for p in latest_points}
+
         for u in usuarios_qs:
-            user_points = gps_hoy_qs.filter(usuario=u)
-            if not user_points.exists():
-                # If they have a running shift today but no GPS records, they are Sin Señal
-                if HistorialJornada.objects.filter(usuario=u, fecha=today, estado_asistencia='en_proceso').exists():
+            latest_point = latest_points_map.get(u.id)
+            if not latest_point:
+                if u.id in active_shifts_user_ids:
                     sin_senal += 1
                 continue
             
-            latest_point = user_points.order_by('-fecha_hora').first()
             if latest_point.fecha_hora < fifteen_mins_ago:
                 sin_senal += 1
             else:
@@ -2669,20 +2689,17 @@ class DashboardResumenView(APIView):
 
         # Ultima ubicacion registrada por usuario hoy
         ultimas_ubicaciones = []
-        users_with_gps = list(gps_hoy_qs.values_list('usuario_id', flat=True).distinct())
-        for user_id in users_with_gps:
-            latest_point = gps_hoy_qs.filter(usuario_id=user_id).select_related('usuario').order_by('-fecha_hora').first()
-            if latest_point:
-                ultimas_ubicaciones.append({
-                    'usuario_id': user_id,
-                    'usuario_nombre': latest_point.usuario.nombre_completo,
-                    'latitud': float(latest_point.latitud),
-                    'longitud': float(latest_point.longitud),
-                    'fecha_hora': latest_point.fecha_hora.isoformat(),
-                    'bateria': latest_point.bateria_porcentaje,
-                    'es_fuera_de_zona': latest_point.es_fuera_de_zona,
-                    'distancia_sede_metros': float(latest_point.distancia_sede_metros) if latest_point.distancia_sede_metros else None
-                })
+        for user_id, latest_point in latest_points_map.items():
+            ultimas_ubicaciones.append({
+                'usuario_id': user_id,
+                'usuario_nombre': latest_point.usuario.nombre_completo,
+                'latitud': float(latest_point.latitud),
+                'longitud': float(latest_point.longitud),
+                'fecha_hora': latest_point.fecha_hora.isoformat(),
+                'bateria': latest_point.bateria_porcentaje,
+                'es_fuera_de_zona': latest_point.es_fuera_de_zona,
+                'distancia_sede_metros': float(latest_point.distancia_sede_metros) if latest_point.distancia_sede_metros else None
+            })
 
         # Define display values (without mock fallbacks)
         total_usuarios_disp = total_usuarios
@@ -2730,13 +2747,25 @@ class DashboardResumenView(APIView):
         total_puntos_gps_hoy_disp = total_puntos_gps_hoy
 
         # 8. Datos para gráficos
+        trend_inicio = fecha_inicio
+        trend_fin = fecha_fin
+        if rango == 'hoy':
+            trend_inicio = today - timezone.timedelta(days=6)
+            trend_fin = today
+
         by_date = {}
-        curr = fecha_inicio
-        while curr <= fecha_fin:
+        curr = trend_inicio
+        while curr <= trend_fin:
             by_date[curr.isoformat()] = {'fecha': curr.isoformat(), 'completa': 0, 'incompleta': 0, 'ausente': 0}
             curr += timezone.timedelta(days=1)
 
-        day_stats = jornadas_qs.values('fecha', 'estado_asistencia').annotate(count=models.Count('id'))
+        trend_jornadas_qs = HistorialJornada.objects.filter(fecha__range=(trend_inicio, trend_fin))
+        if sedes_filter is not None:
+            trend_jornadas_qs = trend_jornadas_qs.filter(sede_id__in=sedes_filter)
+        if rol_param:
+            trend_jornadas_qs = trend_jornadas_qs.filter(usuario__rol__codigo__iexact=rol_param)
+
+        day_stats = trend_jornadas_qs.values('fecha', 'estado_asistencia').annotate(count=models.Count('id'))
         for ds in day_stats:
             f_str = ds['fecha'].isoformat()
             est = ds['estado_asistencia']
@@ -2903,6 +2932,8 @@ class DashboardResumenView(APIView):
                 'actividades_hoy': actividades_hoy_disp,
                 'actividades_en_proceso': actividades_en_proceso_disp,
                 'actividades_finalizadas': actividades_finalizadas_disp,
+                'actividades_pendientes': 0,
+                'total_actividades': actividades_en_proceso_disp + actividades_finalizadas_disp,
                 'asesores_con_actividad': asesores_con_actividad_disp,
                 'asesores_sin_actividad': asesores_sin_actividad_disp
             },
